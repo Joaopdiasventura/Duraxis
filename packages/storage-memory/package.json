@@ -25,5 +25,8 @@
   },
   "dependencies": {
     "@duraxis/storage": "workspace:*"
+  },
+  "devDependencies": {
+    "@duraxis/storage-testkit": "workspace:*"
   }
 }

@@ -3,13 +3,21 @@
   "version": "0.0.0",
   "description": "",
   "main": "index.js",
-  "scripts": {
-    "format": "prettier --write .",
-    "format:check": "prettier --check ."
-  },
   "keywords": [],
   "author": "João Paulo Dias <joaopdias.dev@gmail.com>",
   "license": "ISC",
+  "scripts": {
+    "build": "pnpm -r --if-present build",
+    "typecheck": "pnpm -r --if-present typecheck",
+    "test": "pnpm build && vitest run",
+    "test:watch": "pnpm build && vitest",
+    "test:coverage": "pnpm build && vitest run --coverage",
+    "test:storage": "pnpm build && vitest run --project @duraxis/storage",
+    "test:memory": "pnpm build && vitest run --project @duraxis/storage-memory",
+    "test:packages": "pnpm -r --if-present test",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
   "devEngines": {
     "packageManager": {
       "name": "pnpm",
@@ -21,6 +29,7 @@
   "type": "module",
   "devDependencies": {
     "@types/node": "^26.6.6",
+    "@vitest/coverage-v8": "^5.1.0",
     "prettier": "^3.9.10",
     "typescript": "^7.0.2",
     "vite": "^8.3.5",
