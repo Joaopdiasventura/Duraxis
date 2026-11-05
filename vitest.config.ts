@@ -2,9 +2,11 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   test: {
-    projects: ["./packages/storage/vitest.config.ts", "./packages/storage-memory/vitest.config.ts"],
-
-    reporters: ["default"],
+    projects: [
+      "./packages/storage/vitest.config.ts",
+      "./packages/storage-memory/vitest.config.ts",
+      "./packages/core/vitest.config.ts",
+    ],
 
     coverage: {
       provider: "v8",
