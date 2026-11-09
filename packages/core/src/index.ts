@@ -27,3 +27,11 @@ export type { SnapshotReader } from "./snapshots/snapshot-reader.js";
 export { ManifestReachabilityScanner } from "./gc/reachability-scanner.js";
 
 export type { ReachabilityScanner } from "./gc/reachability-scanner.js";
+
+export { BPlusTree } from "./indexes/bptree/bptree.js";
+
+export type { BPlusTreeOptions } from "./indexes/bptree/bptree.js";
+
+export { BPlusTreeNodeStore } from "./indexes/bptree/bptree-node-store.js";
+
+export type { NodeId, IndexEntry, ScanOptions } from "./indexes/bptree/bptree-node.js";
