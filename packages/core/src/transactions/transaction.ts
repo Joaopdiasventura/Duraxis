@@ -1,6 +1,9 @@
 import type { StorageDriver } from "@duraxis/storage";
 
 import type { Snapshot } from "../commit/manifest.js";
+
+import { ManifestSnapshotReader, type SnapshotReader } from "../snapshots/snapshot-reader.js";
+
 import { StorageKeyManager } from "../security/storage-key-manager.js";
 import { TransactionStateError } from "../errors/transaction-state.error.js";
 
@@ -25,24 +28,18 @@ export class Transaction {
   private readonly writes = new Map<string, PendingWrite>();
 
   private readonly capturedSnapshot: Snapshot;
+  private readonly reader: SnapshotReader;
 
   private stateValue: TransactionState = "ACTIVE";
   private pendingReads = 0;
 
   public constructor(
-    private readonly storage: StorageDriver,
+    storage: StorageDriver,
     snapshot: Snapshot,
     private readonly keys = new StorageKeyManager(),
   ) {
-    this.capturedSnapshot = {
-      storageVersion: snapshot.storageVersion,
-      manifest: {
-        format: snapshot.manifest.format,
-        transactionId: snapshot.manifest.transactionId,
-        commitHead: snapshot.manifest.commitHead,
-        entries: new Map(snapshot.manifest.entries),
-      },
-    };
+    this.capturedSnapshot = cloneSnapshot(snapshot);
+    this.reader = new ManifestSnapshotReader(storage, this.capturedSnapshot, this.keys);
   }
 
   public get state(): TransactionState {
@@ -59,21 +56,11 @@ export class Transaction {
 
       if (pending) return pending.type == "delete" ? null : new Uint8Array(pending.data);
 
-      const objectKey = this.capturedSnapshot.manifest.entries.get(key);
-
-      if (!objectKey) return null;
-
-      this.keys.validateObjectKey(objectKey);
-
-      const stored = await this.storage.get(objectKey);
+      const result = await this.reader.get(key);
 
       this.assertActive();
 
-      if (!stored) throw new Error(`Missing committed storage object: ${objectKey}`);
-
-      this.keys.verifyObject(objectKey, stored.data);
-
-      return new Uint8Array(stored.data);
+      return result;
     } finally {
       this.pendingReads--;
     }
@@ -109,14 +96,14 @@ export class Transaction {
     this.stateValue = "PREPARING";
 
     return {
-      snapshot: this.capturedSnapshot,
+      snapshot: cloneSnapshot(this.capturedSnapshot),
       writes: new Map(
-        [...this.writes].map(([key, value]) => [
+        [...this.writes].map(([key, operation]) => [
           key,
-          value.type == "put"
+          operation.type == "put"
             ? {
                 type: "put" as const,
-                data: new Uint8Array(value.data),
+                data: new Uint8Array(operation.data),
               }
             : {
                 type: "delete" as const,
@@ -129,14 +116,12 @@ export class Transaction {
   public beginPublication(): void {
     if (this.stateValue != "PREPARING")
       throw new TransactionStateError("Transaction is not preparing");
-
     this.stateValue = "COMMITTING";
   }
 
   public markCommitted(): void {
     if (this.stateValue != "PREPARING" && this.stateValue != "COMMITTING")
       throw new TransactionStateError("Invalid transaction state");
-
     this.stateValue = "COMMITTED";
   }
 
@@ -150,7 +135,6 @@ export class Transaction {
 
   public close(): void {
     if (this.stateValue == "ACTIVE" || this.stateValue == "PREPARING") this.abort();
-
     this.writes.clear();
   }
 
@@ -158,4 +142,16 @@ export class Transaction {
     if (this.stateValue != "ACTIVE")
       throw new TransactionStateError("Transaction is no longer active");
   }
+}
+
+function cloneSnapshot(snapshot: Snapshot): Snapshot {
+  return {
+    storageVersion: snapshot.storageVersion,
+    manifest: {
+      format: 1,
+      transactionId: snapshot.manifest.transactionId,
+      commitHead: snapshot.manifest.commitHead ?? null,
+      entries: new Map(snapshot.manifest.entries),
+    },
+  };
 }

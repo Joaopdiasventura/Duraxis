@@ -6,10 +6,11 @@ import { CommitCoordinator } from "../commit/commit-coordinator.js";
 import { Transaction } from "../transactions/transaction.js";
 import { StorageKeyManager } from "../security/storage-key-manager.js";
 import { RecoveryManager } from "../recovery/recovery-manager.js";
+import type { SnapshotReader } from "../snapshots/snapshot-reader.js";
 
 import {
   GarbageCollector,
-  type ListableStorageDriver,
+  type GarbageCollectionOptions,
   type GarbageCollectionReport,
 } from "../gc/garbage-collector.js";
 
@@ -26,10 +27,10 @@ export class DuraxisDatabase {
 
   private readonly active = new Set<Snapshot>();
   private maintenance = false;
+  private pendingSnapshotAcquisitions = 0;
 
   public constructor(options: DuraxisDatabaseOptions) {
     this.storage = options.storage;
-
     this.keys = new StorageKeyManager(options.namespace);
 
     this.coordinator = new CommitCoordinator(this.storage, this.keys);
@@ -38,14 +39,7 @@ export class DuraxisDatabase {
   }
 
   public async transaction<T>(callback: (tx: Transaction) => Promise<T> | T): Promise<T> {
-    if (this.maintenance) throw new Error("Database is in exclusive maintenance mode");
-
-    const snapshot = await this.createSnapshot();
-
-    if (this.maintenance) throw new Error("Database is in exclusive maintenance mode");
-
-    this.active.add(snapshot);
-
+    const snapshot = await this.acquireSnapshot();
     const tx = new Transaction(this.storage, snapshot, this.keys);
 
     try {
@@ -61,17 +55,8 @@ export class DuraxisDatabase {
     }
   }
 
-  public async snapshot<T>(
-    callback: (reader: { get(key: string): Promise<Uint8Array | null> }) => Promise<T> | T,
-  ): Promise<T> {
-    if (this.maintenance) throw new Error("Database is in exclusive maintenance mode");
-
-    const snapshot = await this.createSnapshot();
-
-    if (this.maintenance) throw new Error("Database is in exclusive maintenance mode");
-
-    this.active.add(snapshot);
-
+  public async snapshot<T>(callback: (reader: SnapshotReader) => Promise<T> | T): Promise<T> {
+    const snapshot = await this.acquireSnapshot();
     const tx = new Transaction(this.storage, snapshot, this.keys);
 
     try {
@@ -96,58 +81,72 @@ export class DuraxisDatabase {
     objects: number;
     commits: number;
   }> {
-    const snapshot = await this.createSnapshot();
+    const snapshot = await this.acquireSnapshot();
 
-    let objects = 0;
+    try {
+      let objects = 0;
 
-    for (const ref of snapshot.manifest.entries.values()) {
-      this.keys.validateObjectKey(ref);
+      for (const ref of snapshot.manifest.entries.values()) {
+        this.keys.validateObjectKey(ref);
 
-      const stored = await this.storage.get(ref);
+        const stored = await this.storage.get(ref);
 
-      if (!stored) throw new Error(`Missing committed object: ${ref}`);
+        if (!stored) throw new Error(`Missing committed object: ${ref}`);
 
-      this.keys.verifyObject(ref, stored.data);
-      objects++;
+        this.keys.verifyObject(ref, stored.data);
+        objects++;
+      }
+
+      const commits = await this.recovery.verifyHistory();
+
+      return { objects, commits };
+    } finally {
+      this.active.delete(snapshot);
     }
-
-    const commits = await this.recovery.verifyHistory();
-
-    return {
-      objects,
-      commits,
-    };
   }
 
   public async collectGarbage(
-    storage: ListableStorageDriver,
-    options: {
-      dryRun?: boolean;
-      exclusiveMaintenance?: boolean;
-      olderThanMs?: number;
-    } = {},
+    storage: StorageDriver,
+    options: GarbageCollectionOptions = {},
   ): Promise<GarbageCollectionReport> {
     if (storage != this.storage) throw new Error("GC driver must match database storage");
-
     if (this.maintenance) throw new Error("Maintenance already active");
 
     this.maintenance = true;
 
     try {
-      if (options.dryRun == false && this.active.size != 0)
-        throw new Error("Active transactions prevent GC");
+      if (options.dryRun == false)
+        if (this.active.size > 0 || this.pendingSnapshotAcquisitions > 0)
+          throw new Error("Active transactions or pending snapshots prevent GC");
 
-      const gc = new GarbageCollector(storage, this.keys, () => [...this.active]);
+      const collector = new GarbageCollector(this.storage, this.keys, () => [...this.active]);
 
-      return await gc.collect(options);
+      return await collector.collect(options);
     } finally {
       this.maintenance = false;
     }
   }
 
+  private async acquireSnapshot(): Promise<Snapshot> {
+    if (this.maintenance) throw new Error("Database is in exclusive maintenance mode");
+
+    this.pendingSnapshotAcquisitions++;
+
+    try {
+      const snapshot = await this.createSnapshot();
+
+      if (this.maintenance) throw new Error("Database is in exclusive maintenance mode");
+
+      this.active.add(snapshot);
+
+      return snapshot;
+    } finally {
+      this.pendingSnapshotAcquisitions--;
+    }
+  }
+
   private async createSnapshot(): Promise<Snapshot> {
     const stored = await this.storage.get(this.keys.manifestKey);
-
     return stored
       ? {
           manifest: decodeManifest(stored.data, this.keys),

@@ -1,14 +1,9 @@
 {
-    "extends": "./tsconfig.json",
-    "compilerOptions": {
-        "declaration": true,
-        "emitDeclarationOnly": true,
-        "noEmit": false
-    },
-    "exclude": [
-        "node_modules",
-        "dist",
-        "src/**/*.spec.ts",
-        "src/**/*.test.ts"
-    ]
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "noEmit": false
+  },
+  "exclude": ["node_modules", "dist", "src/**/*.spec.ts", "src/**/*.test.ts"]
 }

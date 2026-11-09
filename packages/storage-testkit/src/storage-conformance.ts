@@ -278,5 +278,81 @@ export function defineStorageConformanceSuite(options: ConformanceOptions): void
         } else expect(stored).toBeNull();
       });
     });
+
+    describe("object listing", () => {
+      it("returns an empty list for unmatched prefixes", async () => {
+        expect(await driver.list("missing/")).toEqual([]);
+      });
+
+      it("lists only objects matching the prefix", async () => {
+        await driver.put("users/1", encode("first"), createOnly());
+
+        await driver.put("users/2", encode("second"), createOnly());
+
+        await driver.put("accounts/1", encode("third"), createOnly());
+
+        const objects = await driver.list("users/");
+
+        expect(objects.map((item) => item.key)).toEqual(["users/1", "users/2"]);
+      });
+
+      it("returns object versions and creation timestamps", async () => {
+        const result = await driver.put("records/1", encode("value"), createOnly());
+
+        if (!result.success) {
+          throw new Error("Unexpected creation conflict");
+        }
+
+        const objects = await driver.list("records/");
+
+        expect(objects).toHaveLength(1);
+        expect(objects[0]!.version).toBe(result.version);
+
+        expect(Number.isSafeInteger(objects[0]!.createdAt)).toBe(true);
+      });
+
+      it("does not return binary payloads", async () => {
+        await driver.put("users/1", encode("secret"), createOnly());
+
+        const objects = await driver.list("users/");
+
+        expect(Object.keys(objects[0]!).sort()).toEqual(["createdAt", "key", "version"]);
+      });
+
+      it("does not list deleted objects", async () => {
+        const version = requireSuccess(
+          await driver.put("records/1", encode("value"), createOnly()),
+        );
+
+        await driver.delete("records/1", ifVersion(version));
+
+        expect(await driver.list("records/")).toEqual([]);
+      });
+
+      it("returns the latest object version", async () => {
+        const first = requireSuccess(await driver.put("records/1", encode("first"), createOnly()));
+
+        const second = requireSuccess(
+          await driver.put("records/1", encode("second"), ifVersion(first)),
+        );
+
+        const objects = await driver.list("records/");
+
+        expect(objects[0]!.version).toBe(second);
+      });
+
+      it("supports listing all objects", async () => {
+        await driver.put("a", encode("1"), createOnly());
+        await driver.put("b", encode("2"), createOnly());
+
+        const objects = await driver.list("");
+
+        expect(objects.map((item) => item.key)).toEqual(["a", "b"]);
+      });
+
+      it("rejects prefixes containing null bytes", async () => {
+        await expect(driver.list("records/\0")).rejects.toThrow();
+      });
+    });
   });
 }

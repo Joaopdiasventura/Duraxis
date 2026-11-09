@@ -18,8 +18,12 @@ export type { CommitStatus } from "./recovery/recovery-manager.js";
 
 export { GarbageCollector } from "./gc/garbage-collector.js";
 
-export type {
-  GarbageCollectionReport,
-  ListableStorageDriver,
-  StorageObjectInfo,
-} from "./gc/garbage-collector.js";
+export type { GarbageCollectionOptions, GarbageCollectionReport } from "./gc/garbage-collector.js";
+
+export { ManifestSnapshotReader } from "./snapshots/snapshot-reader.js";
+
+export type { SnapshotReader } from "./snapshots/snapshot-reader.js";
+
+export { ManifestReachabilityScanner } from "./gc/reachability-scanner.js";
+
+export type { ReachabilityScanner } from "./gc/reachability-scanner.js";
