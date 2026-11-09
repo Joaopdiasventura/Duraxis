@@ -2,6 +2,7 @@ import {
   assertStorageKey,
   type StorageDriver,
   type StorageObject,
+  type StorageObjectInfo,
   type WriteOptions,
   type WriteResult,
   type DeleteOptions,
@@ -11,6 +12,7 @@ import {
 interface MemoryEntry {
   readonly data: Uint8Array;
   readonly version: string;
+  readonly createdAt: number;
 }
 
 export class MemoryStorageDriver implements StorageDriver {
@@ -33,10 +35,11 @@ export class MemoryStorageDriver implements StorageDriver {
   public async put(key: string, data: Uint8Array, options: WriteOptions): Promise<WriteResult> {
     assertStorageKey(key);
 
-    const current = this.entries.get(key);
-    const condition = options.condition;
+    if (!(data instanceof Uint8Array)) throw new TypeError("Storage data must be a Uint8Array");
 
-    switch (condition.type) {
+    const current = this.entries.get(key);
+
+    switch (options.condition.type) {
       case "if-absent": {
         if (current)
           return {
@@ -48,7 +51,7 @@ export class MemoryStorageDriver implements StorageDriver {
       }
 
       case "if-version": {
-        if (!current || current.version != condition.version)
+        if (!current || current.version != options.condition.version)
           return {
             success: false,
             reason: "conflict",
@@ -63,6 +66,7 @@ export class MemoryStorageDriver implements StorageDriver {
     this.entries.set(key, {
       data: new Uint8Array(data),
       version,
+      createdAt: Date.now(),
     });
 
     return {
@@ -75,21 +79,18 @@ export class MemoryStorageDriver implements StorageDriver {
     assertStorageKey(key);
 
     const current = this.entries.get(key);
-    const condition = options.condition;
 
-    switch (condition.type) {
-      case "if-absent": {
-        if (current)
-          return {
-            success: false,
-            reason: "conflict",
-          };
-
-        return { success: true };
-      }
+    switch (options.condition.type) {
+      case "if-absent":
+        return current
+          ? {
+              success: false,
+              reason: "conflict",
+            }
+          : { success: true };
 
       case "if-version": {
-        if (!current || current.version != condition.version)
+        if (!current || current.version != options.condition.version)
           return {
             success: false,
             reason: "conflict",
@@ -100,6 +101,27 @@ export class MemoryStorageDriver implements StorageDriver {
         return { success: true };
       }
     }
+  }
+
+  public async list(prefix: string): Promise<readonly StorageObjectInfo[]> {
+    if (typeof prefix != "string" || prefix.includes("\0"))
+      throw new TypeError("Invalid storage prefix");
+
+    const results: StorageObjectInfo[] = [];
+
+    for (const [key, entry] of this.entries) {
+      if (!key.startsWith(prefix)) continue;
+
+      results.push({
+        key,
+        version: entry.version,
+        createdAt: entry.createdAt,
+      });
+    }
+
+    results.sort((a, b) => a.key.localeCompare(b.key));
+
+    return results;
   }
 
   private nextVersion(): string {

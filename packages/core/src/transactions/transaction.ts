@@ -32,9 +32,17 @@ export class Transaction {
   public constructor(
     private readonly storage: StorageDriver,
     snapshot: Snapshot,
-    private readonly keys: StorageKeyManager = new StorageKeyManager(),
+    private readonly keys = new StorageKeyManager(),
   ) {
-    this.capturedSnapshot = cloneSnapshot(snapshot);
+    this.capturedSnapshot = {
+      storageVersion: snapshot.storageVersion,
+      manifest: {
+        format: snapshot.manifest.format,
+        transactionId: snapshot.manifest.transactionId,
+        commitHead: snapshot.manifest.commitHead,
+        entries: new Map(snapshot.manifest.entries),
+      },
+    };
   }
 
   public get state(): TransactionState {
@@ -44,7 +52,6 @@ export class Transaction {
   public async get(key: string): Promise<Uint8Array | null> {
     this.assertActive();
     this.keys.validateLogicalKey(key);
-
     this.pendingReads++;
 
     try {
@@ -102,14 +109,14 @@ export class Transaction {
     this.stateValue = "PREPARING";
 
     return {
-      snapshot: cloneSnapshot(this.capturedSnapshot),
+      snapshot: this.capturedSnapshot,
       writes: new Map(
-        Array.from(this.writes, ([key, item]) => [
+        [...this.writes].map(([key, value]) => [
           key,
-          item.type == "put"
+          value.type == "put"
             ? {
                 type: "put" as const,
-                data: new Uint8Array(item.data),
+                data: new Uint8Array(value.data),
               }
             : {
                 type: "delete" as const,
@@ -127,8 +134,8 @@ export class Transaction {
   }
 
   public markCommitted(): void {
-    if (this.stateValue != "COMMITTING" && this.stateValue != "PREPARING")
-      throw new TransactionStateError("Transaction cannot be committed in its current state");
+    if (this.stateValue != "PREPARING" && this.stateValue != "COMMITTING")
+      throw new TransactionStateError("Invalid transaction state");
 
     this.stateValue = "COMMITTED";
   }
@@ -143,6 +150,7 @@ export class Transaction {
 
   public close(): void {
     if (this.stateValue == "ACTIVE" || this.stateValue == "PREPARING") this.abort();
+
     this.writes.clear();
   }
 
@@ -150,15 +158,4 @@ export class Transaction {
     if (this.stateValue != "ACTIVE")
       throw new TransactionStateError("Transaction is no longer active");
   }
-}
-
-function cloneSnapshot(snapshot: Snapshot): Snapshot {
-  return {
-    storageVersion: snapshot.storageVersion,
-    manifest: {
-      format: 1,
-      transactionId: snapshot.manifest.transactionId,
-      entries: new Map(snapshot.manifest.entries),
-    },
-  };
 }

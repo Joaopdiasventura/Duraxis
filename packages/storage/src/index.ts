@@ -1,6 +1,6 @@
 export type { StorageDriver } from "./contracts/storage-driver.interface.js";
 
-export type { StorageObject } from "./types/storage-object.js";
+export type { StorageObject, StorageObjectInfo } from "./types/storage-object.js";
 
 export type { WriteCondition, WriteOptions, DeleteOptions } from "./types/storage-options.js";
 

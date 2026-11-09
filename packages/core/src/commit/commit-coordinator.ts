@@ -4,6 +4,7 @@ import type { StorageDriver } from "@duraxis/storage";
 
 import { encodeManifest, type Manifest } from "./manifest.js";
 
+import { encodeCommitRecord } from "./commit-record.js";
 import { Transaction } from "../transactions/transaction.js";
 import { TransactionConflictError } from "../errors/transaction-conflict.error.js";
 import { CommitOutcomeUnknownError } from "../errors/commit-outcome-unknown.error.js";
@@ -12,7 +13,7 @@ import { StorageKeyManager } from "../security/storage-key-manager.js";
 export class CommitCoordinator {
   public constructor(
     private readonly storage: StorageDriver,
-    private readonly keys: StorageKeyManager = new StorageKeyManager(),
+    private readonly keys = new StorageKeyManager(),
   ) {}
 
   public async commit(transaction: Transaction): Promise<void> {
@@ -46,13 +47,28 @@ export class CommitCoordinator {
       entries.set(key, objectKey);
     }
 
+    const commitBytes = encodeCommitRecord({
+      format: 1,
+      transactionId,
+      previous: prepared.snapshot.manifest.commitHead ?? null,
+    });
+
+    const commitKey = this.keys.commitKey(transactionId, commitBytes);
+
+    const recordResult = await this.storage.put(commitKey, commitBytes, {
+      condition: {
+        type: "if-absent",
+      },
+    });
+
+    if (!recordResult.success) throw new Error("Unexpected commit record collision");
+
     const manifest: Manifest = {
       format: 1,
       transactionId,
+      commitHead: commitKey,
       entries,
     };
-
-    const previousVersion = prepared.snapshot.storageVersion;
 
     const bytes = encodeManifest(manifest);
 
@@ -63,17 +79,16 @@ export class CommitCoordinator {
     try {
       result = await this.storage.put(this.keys.manifestKey, bytes, {
         condition:
-          previousVersion === null
-            ? {
-                type: "if-absent",
-              }
+          prepared.snapshot.storageVersion == null
+            ? { type: "if-absent" }
             : {
                 type: "if-version",
-                version: previousVersion,
+                version: prepared.snapshot.storageVersion,
               },
       });
     } catch (cause) {
       transaction.markUnknown();
+
       throw new CommitOutcomeUnknownError(transactionId, cause);
     }
 
