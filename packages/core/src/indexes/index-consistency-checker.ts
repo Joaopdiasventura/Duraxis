@@ -4,6 +4,8 @@ import {
   parseRecordKey,
   decodeDocument,
   indexedValue,
+  indexFields,
+  fieldDefinition,
   indexId,
 } from "../catalog/collection-schema.js";
 import type { Manifest } from "../commit/manifest.js";
@@ -54,11 +56,27 @@ export class IndexConsistencyChecker {
 
           const document = decodeDocument(await this.primary.readObject(record.ref));
 
-          const value = indexedValue(document, index.field);
+          const values = [];
+          let missing = false;
 
-          if (value === undefined) continue;
+          for (const part of indexFields(index)) {
+            const value = indexedValue(document, part.field, fieldDefinition(schema, part.field));
 
-          const key = encodeSecondaryKey(value, index.unique ? undefined : parsed.id);
+            if (value === undefined) {
+              missing = true;
+              break;
+            }
+
+            values.push(value);
+          }
+
+          if (missing) continue;
+
+          const key = encodeSecondaryKey(
+            values,
+            index.unique ? undefined : parsed.id,
+            indexFields(index).map((part) => part.order),
+          );
 
           const hex = Buffer.from(key).toString("hex");
 

@@ -160,14 +160,37 @@ export class BPlusTree {
 
     if (!Number.isSafeInteger(limit) || limit < 0) throw new Error("Invalid scan limit");
 
+    if (options.direction != null && options.direction != "ASC" && options.direction != "DESC")
+      throw new Error("Invalid scan direction");
+    if (lower != null && upper != null && lower > upper) throw new Error("Invalid scan range");
     if (root == null || limit == 0) return;
+    const direction = options.direction ?? "ASC";
+    const signal = options.signal;
+    if (signal?.aborted) throw signal.reason ?? new Error("Scan cancelled");
 
     let count = 0;
 
-    for await (const entry of this.traverse(root, lower, upper, 0, new Set())) {
+    for await (const entry of this.traverse(
+      root,
+      lower,
+      upper,
+      direction,
+      signal,
+      options.metrics,
+      0,
+      new Set(),
+    )) {
+      if (signal?.aborted) throw signal.reason ?? new Error("Scan cancelled");
       const key = encodeIndexKey(entry.key);
-      if (lower != null && (key < lower || (key == lower && options.gt != undefined))) continue;
-      if (upper != null && (key > upper || (key == upper && options.lt != undefined))) return;
+      options.metrics && options.metrics.entriesExamined++;
+      if (lower != null && (key < lower || (key == lower && options.gt != undefined))) {
+        if (direction == "DESC") return;
+        continue;
+      }
+      if (upper != null && (key > upper || (key == upper && options.lt != undefined))) {
+        if (direction == "ASC") return;
+        continue;
+      }
 
       yield entry;
       if (++count >= limit) return;
@@ -554,15 +577,21 @@ export class BPlusTree {
     ref: NodeId,
     lower: EncodedKey | null,
     upper: EncodedKey | null,
+    direction: "ASC" | "DESC",
+    signal: AbortSignal | undefined,
+    metrics: ScanOptions["metrics"],
     depth: number,
-    ancestors: Set<NodeId>,
+    seen: Set<NodeId>,
   ): AsyncIterable<IndexEntry> {
-    this.enter(ref, depth, ancestors);
+    if (signal?.aborted) throw signal.reason ?? new Error("Scan cancelled");
+    if (depth >= MAX_DEPTH) throw new Error("B+tree maximum depth exceeded");
+    if (seen.has(ref)) throw new Error("B+tree repeated reference or cycle detected");
+    seen.add(ref);
+    const node = await this.nodes.read(ref);
+    metrics && metrics.nodesVisited++;
 
-    try {
-      const node = await this.nodes.read(ref);
-
-      if (node.type == "leaf") {
+    if (node.type == "leaf") {
+      if (direction == "ASC") {
         const start = lower == null ? 0 : lowerBound(node.keys, lower);
 
         for (let i = start; i < node.keys.length; i++) {
@@ -575,19 +604,49 @@ export class BPlusTree {
             value: decodeIndexValue(node.values[i]!),
           };
         }
-
         return;
       }
+      const start = upper == null ? node.keys.length - 1 : upperBound(node.keys, upper) - 1;
+      for (let i = start; i >= 0; i--) {
+        const key = node.keys[i]!;
+        if (lower != null && key < lower) return;
+        yield { key: decodeIndexKey(key), value: decodeIndexValue(node.values[i]!) };
+      }
+      return;
+    }
 
+    if (direction == "ASC") {
       const start = lower == null ? 0 : upperBound(node.keys, lower);
 
       for (let i = start; i < node.children.length; i++) {
         if (upper != null && i > 0 && node.keys[i - 1]! > upper) return;
 
-        yield* this.traverse(node.children[i]!, lower, upper, depth + 1, ancestors);
+        yield* this.traverse(
+          node.children[i]!,
+          lower,
+          upper,
+          direction,
+          signal,
+          metrics,
+          depth + 1,
+          seen,
+        );
       }
-    } finally {
-      ancestors.delete(ref);
+      return;
+    }
+    const start = upper == null ? node.children.length - 1 : upperBound(node.keys, upper);
+    for (let i = start; i >= 0; i--) {
+      if (lower != null && i < node.keys.length && node.keys[i]! < lower) return;
+      yield* this.traverse(
+        node.children[i]!,
+        lower,
+        upper,
+        direction,
+        signal,
+        metrics,
+        depth + 1,
+        seen,
+      );
     }
   }
 }

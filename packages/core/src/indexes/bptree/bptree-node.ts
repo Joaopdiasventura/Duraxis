@@ -27,6 +27,14 @@ export interface ScanOptions {
   readonly lt?: Uint8Array;
   readonly lte?: Uint8Array;
   readonly limit?: number;
+  readonly direction?: "ASC" | "DESC";
+  readonly signal?: AbortSignal;
+  readonly metrics?: ScanMetrics;
+}
+
+export interface ScanMetrics {
+  nodesVisited: number;
+  entriesExamined: number;
 }
 
 export type BatchOperation =

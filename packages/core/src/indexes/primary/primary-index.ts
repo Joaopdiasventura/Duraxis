@@ -3,7 +3,7 @@ import type { Manifest } from "../../commit/manifest.js";
 import { StorageKeyManager } from "../../security/storage-key-manager.js";
 import { BPlusTree } from "../bptree/bptree.js";
 import { BPlusTreeNodeStore } from "../bptree/bptree-node-store.js";
-import type { BatchOperation, ScanOptions } from "../bptree/bptree-node.js";
+import type { BatchOperation, BPlusTreeNodeIO, ScanOptions } from "../bptree/bptree-node.js";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
@@ -14,8 +14,9 @@ export class PrimaryIndex {
   public constructor(
     private readonly storage: StorageDriver,
     private readonly keys: StorageKeyManager,
+    nodes: BPlusTreeNodeIO = new BPlusTreeNodeStore(storage, keys),
   ) {
-    this.tree = new BPlusTree(new BPlusTreeNodeStore(storage, keys));
+    this.tree = new BPlusTree(nodes);
   }
 
   public async getReference(manifest: Manifest, logicalKey: string): Promise<string | null> {

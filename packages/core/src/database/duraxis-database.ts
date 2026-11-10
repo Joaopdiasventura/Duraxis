@@ -20,6 +20,16 @@ import { SecondaryIndexManager } from "../indexes/secondary/secondary-index-mana
 import { BPlusTreeNodeStore } from "../indexes/bptree/bptree-node-store.js";
 import { IndexConsistencyChecker } from "../indexes/index-consistency-checker.js";
 import { prefixSuccessor } from "../indexes/index-key.js";
+import { QueryContext } from "../query/context/query-context.js";
+
+import {
+  QueryExecutor,
+  type QueryExecutorOptions,
+  type QueryPage,
+} from "../query/executor/query-executor.js";
+import type { QueryOperator } from "../query/executor/operators/operators.js";
+import type { LogicalQuery } from "../query/model/query.js";
+import type { QueryRow } from "../query/executor/predicate.js";
 
 import {
   RECORD_PREFIX,
@@ -104,6 +114,46 @@ export class DuraxisDatabase {
     });
   }
 
+  public async removeIndex(collection: string, indexName: string): Promise<void> {
+    await this.transaction((tx) => tx.removeIndex(collection, indexName));
+  }
+
+  public query(
+    query: LogicalQuery,
+    source: QueryOperator,
+    options?: QueryExecutorOptions,
+  ): AsyncIterable<QueryRow> {
+    const database = this;
+
+    return (async function* () {
+      const snapshot = await database.acquireSnapshot();
+      const context = new QueryContext(database.storage, snapshot, database.keys);
+
+      try {
+        yield* new QueryExecutor(options).execute(context, query, source);
+      } finally {
+        context.close();
+        database.active.delete(snapshot);
+      }
+    })();
+  }
+
+  public async queryPage(
+    query: LogicalQuery,
+    source: QueryOperator,
+    options?: QueryExecutorOptions,
+  ): Promise<QueryPage> {
+    const snapshot = await this.acquireSnapshot();
+    const context = new QueryContext(this.storage, snapshot, this.keys);
+    
+    try {
+      return await new QueryExecutor(options).page(context, query, source);
+    } finally {
+      context.close();
+      this.active.delete(snapshot);
+    }
+  }
+
   public async getDocument(collection: string, id: string): Promise<DocumentRecord | null> {
     return this.transaction((tx) => tx.getDocument(collection, id));
   }
@@ -111,7 +161,7 @@ export class DuraxisDatabase {
   public async findByIndex(
     collection: string,
     indexName: string,
-    value: IndexScalar,
+    value: IndexScalar | readonly IndexScalar[],
     limit = 100,
   ): Promise<CollectionRow[]> {
     const snapshot = await this.acquireSnapshot();

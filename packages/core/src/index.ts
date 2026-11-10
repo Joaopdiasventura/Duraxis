@@ -33,11 +33,13 @@ export { BPlusTree } from "./indexes/bptree/bptree.js";
 export type { BPlusTreeOptions } from "./indexes/bptree/bptree.js";
 
 export { BPlusTreeNodeStore } from "./indexes/bptree/bptree-node-store.js";
+export { BPlusTreeNodeCache } from "./indexes/bptree/bptree-node-cache.js";
 
 export type {
   NodeId,
   IndexEntry,
   ScanOptions,
+  ScanMetrics,
   BatchOperation,
   BPlusTreeNodeIO,
 } from "./indexes/bptree/bptree-node.js";
@@ -53,10 +55,32 @@ export {
   UniqueIndexViolationError,
 } from "./indexes/secondary/secondary-index-manager.js";
 
-export { encodeScalar, encodeSecondaryKey, prefixSuccessor } from "./indexes/index-key.js";
+export type {
+  SecondaryIndexScanOptions,
+  SecondaryIndexEntry,
+} from "./indexes/secondary/secondary-index-manager.js";
+
+export {
+  encodeScalar,
+  encodeCompositeKey,
+  encodeIdentifier,
+  encodeSecondaryKey,
+  prefixSuccessor,
+  prefixBounds,
+  compositePrefixBounds,
+  indexRangeBounds,
+  compareBytes,
+  compareIndexScalars,
+} from "./indexes/index-key.js";
+
+export type { IndexKeyPart, EncodedIndexBounds } from "./indexes/index-key.js";
 
 export {
   validateCollection,
+  normalizeCollection,
+  validateDocument,
+  indexFields,
+  fieldDefinition,
   recordKey,
   parseRecordKey,
   indexId,
@@ -67,9 +91,56 @@ export {
 
 export type {
   IndexScalar,
+  FieldType,
+  FieldDefinition,
+  IndexOrder,
+  IndexFieldDefinition,
   SecondaryIndexDefinition,
   CollectionDefinition,
   DocumentRecord,
 } from "./catalog/collection-schema.js";
 
 export type { CollectionRow } from "./database/duraxis-database.js";
+
+export { QueryContext } from "./query/context/query-context.js";
+export type { QueryContextOptions, QueryMetrics } from "./query/context/query-context.js";
+export { validateQuery } from "./query/validation/query-validator.js";
+export { encodeQueryCursor, decodeQueryCursor } from "./query/model/cursor.js";
+
+export type {
+  LogicalQuery,
+  QueryPredicate,
+  QueryOrder,
+  ComparisonOperator,
+  AccessPath,
+} from "./query/model/query.js";
+
+export { QueryExecutor } from "./query/executor/query-executor.js";
+export type { QueryPage, QueryExecutorOptions } from "./query/executor/query-executor.js";
+export { evaluatePredicate, compareRows } from "./query/executor/predicate.js";
+export type { QueryRow } from "./query/executor/predicate.js";
+
+export {
+  PrimaryLookup,
+  UniqueIndexLookup,
+  SecondaryIndexScan,
+  SecondaryIndexRangeScan,
+  CollectionScan,
+  Filter,
+  Sort,
+  Limit,
+  Projection,
+  Union,
+  Intersection,
+  Difference,
+  QueryMemoryLimitError,
+} from "./query/executor/operators/operators.js";
+
+export type {
+  QueryOperator,
+  OperatorOrdering,
+  SortSpillStore,
+  SecondaryRange,
+} from "./query/executor/operators/operators.js";
+
+export { ReferenceQueryExecutor } from "./query/testing/reference-query-executor.js";

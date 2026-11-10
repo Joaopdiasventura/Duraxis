@@ -8,6 +8,9 @@ import { TransactionStateError } from "../errors/transaction-state.error.js";
 import {
   RECORD_PREFIX,
   validateCollection,
+  validateDocument,
+  normalizeCollection,
+  fieldDefinition,
   recordKey,
   encodeDocument,
   decodeDocument,
@@ -17,6 +20,16 @@ import {
   type DocumentRecord,
 } from "../catalog/collection-schema.js";
 import { encodeIndexKey } from "../indexes/bptree/bptree-codec.js";
+import { QueryContext } from "../query/context/query-context.js";
+
+import {
+  QueryExecutor,
+  type QueryExecutorOptions,
+  type QueryPage,
+} from "../query/executor/query-executor.js";
+import type { QueryOperator } from "../query/executor/operators/operators.js";
+import type { LogicalQuery } from "../query/model/query.js";
+import type { QueryRow } from "../query/executor/predicate.js";
 
 export type TransactionState =
   "ACTIVE" | "PREPARING" | "COMMITTING" | "COMMITTED" | "ABORTED" | "UNKNOWN";
@@ -37,14 +50,7 @@ export interface PreparedTransaction {
 }
 
 function cloneSchema(schema: CollectionDefinition): CollectionDefinition {
-  return {
-    name: schema.name,
-    indexes: schema.indexes.map((index) => ({
-      name: index.name,
-      field: index.field,
-      unique: index.unique,
-    })),
-  };
+  return normalizeCollection(schema);
 }
 
 function cloneSnapshot(snapshot: Snapshot): Snapshot {
@@ -73,14 +79,15 @@ export class Transaction {
   private stateValue: TransactionState = "ACTIVE";
   private pendingReads = 0;
   private readonly readWaiters: Array<() => void> = [];
+  private readonly queryContexts = new Set<QueryContext>();
 
   public constructor(
-    storage: StorageDriver,
+    private readonly storage: StorageDriver,
     snapshot: Snapshot,
     private readonly keys = new StorageKeyManager(),
   ) {
     this.capturedSnapshot = cloneSnapshot(snapshot);
-    this.reader = new ManifestSnapshotReader(storage, this.capturedSnapshot, keys);
+    this.reader = new ManifestSnapshotReader(this.storage, this.capturedSnapshot, keys);
   }
 
   public get state(): TransactionState {
@@ -154,6 +161,22 @@ export class Transaction {
     this.schemas.set(collection, cloneSchema(updated));
   }
 
+  public removeIndex(collection: string, indexName: string): void {
+    this.assertActive();
+    const current = this.requireCollection(collection);
+
+    if (!current.indexes.some((index) => index.name == indexName))
+      throw new Error(`Unknown index: ${collection}/${indexName}`);
+
+    this.schemas.set(
+      collection,
+      cloneSchema({
+        ...current,
+        indexes: current.indexes.filter((index) => index.name != indexName),
+      }),
+    );
+  }
+
   public async getDocument(collection: string, id: string): Promise<DocumentRecord | null> {
     this.assertActive();
     this.requireCollection(collection);
@@ -163,14 +186,72 @@ export class Transaction {
     return value == null ? null : decodeDocument(value);
   }
 
+  public createQueryContext(): QueryContext {
+    this.assertActive();
+
+    const catalog = new Map(this.capturedSnapshot.manifest.catalog);
+
+    for (const [name, schema] of this.schemas) catalog.set(name, cloneSchema(schema));
+
+    let context!: QueryContext;
+
+    context = new QueryContext(this.storage, cloneSnapshot(this.capturedSnapshot), this.keys, {
+      writes: this.writes,
+      catalog,
+      onIteratorStart: () => {
+        this.pendingReads++;
+      },
+      onIteratorEnd: () => this.releaseRead(),
+      onClose: () => this.queryContexts.delete(context),
+    });
+
+    this.queryContexts.add(context);
+
+    return context;
+  }
+
+  public query(
+    query: LogicalQuery,
+    source: QueryOperator,
+    options?: QueryExecutorOptions,
+  ): AsyncIterable<QueryRow> {
+    const context = this.createQueryContext();
+    const executor = new QueryExecutor(options);
+
+    return (async function* () {
+      try {
+        yield* executor.execute(context, query, source);
+      } finally {
+        context.close();
+      }
+    })();
+  }
+
+  public async queryPage(
+    query: LogicalQuery,
+    source: QueryOperator,
+    options?: QueryExecutorOptions,
+  ): Promise<QueryPage> {
+    const context = this.createQueryContext();
+
+    try {
+      return await new QueryExecutor(options).page(context, query, source);
+    } finally {
+      context.close();
+    }
+  }
+
   public putDocument(collection: string, id: string, document: DocumentRecord): void {
     this.assertActive();
 
     const schema = this.requireCollection(collection);
-    const data = encodeDocument(document);
-    const parsed = decodeDocument(data);
+    const parsed = validateDocument(schema, document);
+    const data = encodeDocument(parsed);
 
-    for (const index of schema.indexes) indexedValue(parsed, index.field);
+    for (const index of schema.indexes)
+      for (const part of index.fields ??
+        (index.field ? [{ field: index.field, order: "ASC" as const }] : []))
+        indexedValue(parsed, part.field, fieldDefinition(schema, part.field));
 
     this.stagePut(recordKey(collection, id), data);
   }
@@ -244,6 +325,9 @@ export class Transaction {
 
   public close(): void {
     if (this.stateValue == "ACTIVE" || this.stateValue == "PREPARING") this.abort();
+    for (const context of [...this.queryContexts]) context.close();
+
+    this.queryContexts.clear();
     this.writes.clear();
     this.schemas.clear();
   }
@@ -255,6 +339,11 @@ export class Transaction {
       type: "put",
       data: new Uint8Array(data),
     });
+  }
+
+  private releaseRead(): void {
+    if (this.pendingReads > 0) this.pendingReads--;
+    if (this.pendingReads == 0) for (const resolve of this.readWaiters.splice(0)) resolve();
   }
 
   private collection(name: string): CollectionDefinition | undefined {

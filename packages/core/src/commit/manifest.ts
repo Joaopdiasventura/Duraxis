@@ -2,6 +2,7 @@ import { sha256, assertDigest } from "../integrity/integrity.js";
 import { StorageKeyManager } from "../security/storage-key-manager.js";
 import {
   validateCollection,
+  normalizeCollection,
   indexId,
   type CollectionDefinition,
 } from "../catalog/collection-schema.js";
@@ -57,14 +58,7 @@ function normalizedCatalog(
 
     if (schema.name != name) throw new Error("Collection catalog name mismatch");
 
-    normalized.set(name, {
-      name,
-      indexes: schema.indexes.map((index) => ({
-        name: index.name,
-        field: index.field,
-        unique: index.unique,
-      })),
-    });
+    normalized.set(name, normalizeCollection(schema));
   }
 
   return sorted(normalized);
@@ -174,7 +168,7 @@ export function decodeManifest(bytes: Uint8Array, keys = new StorageKeyManager()
     const schema = value as unknown as CollectionDefinition;
 
     validateCollection(schema);
-    catalog.set(name, schema);
+    catalog.set(name, normalizeCollection(schema));
   }
 
   const manifest: Manifest = {
