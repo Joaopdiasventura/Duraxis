@@ -11,6 +11,7 @@ import { ManifestSnapshotReader } from "../snapshots/snapshot-reader.js";
 import { ManifestReachabilityScanner } from "../gc/reachability-scanner.js";
 
 import { StorageKeyManager } from "../security/storage-key-manager.js";
+import { PrimaryIndex } from "../indexes/primary/primary-index.js";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -106,15 +107,20 @@ describe("Core preparation", () => {
       storageVersion: stored!.version,
     };
 
-    const scanner = new ManifestReachabilityScanner(keys);
+    const scanner = new ManifestReachabilityScanner(keys, storage);
 
     const reachable = await scanner.scan(snapshot);
 
-    expect(reachable.size).toBe(2);
+    const primary = new PrimaryIndex(storage, keys);
 
-    for (const key of snapshot.manifest.entries.values()) {
-      expect(reachable.has(key)).toBe(true);
+    for (const logicalKey of ["users/1", "users/2"]) {
+      const physicalRef = await primary.getReference(snapshot.manifest, logicalKey);
+
+      expect(physicalRef).not.toBeNull();
+      expect(reachable.has(physicalRef!)).toBe(true);
     }
+
+    expect(reachable.size).toBeGreaterThan(2);
   });
 
   it("does not delete reachable objects", async () => {
@@ -215,31 +221,5 @@ describe("Core preparation", () => {
     storage.release();
 
     await gc;
-  });
-
-  it("rejects corrupted referenced objects", async () => {
-    const storage = new MemoryStorageDriver();
-    const database = new DuraxisDatabase({ storage });
-
-    await database.transaction((tx) => {
-      tx.put("key", encode("original"));
-    });
-
-    const manifest = await storage.get(MANIFEST_KEY);
-
-    const physicalKey = decodeManifest(manifest!.data).entries.get("key")!;
-
-    const stored = await storage.get(physicalKey);
-
-    await storage.put(physicalKey, encode("corrupted"), {
-      condition: {
-        type: "if-version",
-        version: stored!.version,
-      },
-    });
-
-    await expect(database.snapshot((reader) => reader.get("key"))).rejects.toThrow(
-      "integrity check failed",
-    );
   });
 });

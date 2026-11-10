@@ -16,6 +16,7 @@ export interface GarbageCollectionOptions {
 
 export interface GarbageCollectionReport {
   readonly scanned: number;
+  readonly nodesScanned: number;
   readonly reachable: number;
   readonly candidates: number;
   readonly deleted: number;
@@ -27,7 +28,7 @@ export class GarbageCollector {
     private readonly storage: StorageDriver,
     private readonly keys: StorageKeyManager,
     private readonly activeSnapshots: () => readonly Snapshot[],
-    private readonly scanner: ReachabilityScanner = new ManifestReachabilityScanner(keys),
+    private readonly scanner: ReachabilityScanner = new ManifestReachabilityScanner(keys, storage),
   ) {}
 
   public async collect(options: GarbageCollectionOptions = {}): Promise<GarbageCollectionReport> {
@@ -36,47 +37,41 @@ export class GarbageCollector {
     if (!dryRun && options.exclusiveMaintenance != true)
       throw new Error("Deletion requires externally guaranteed exclusive maintenance");
 
+    if (!dryRun && this.activeSnapshots().length != 0)
+      throw new Error("Cannot delete objects with active snapshots");
+
     const olderThanMs = options.olderThanMs ?? DEFAULT_GRACE_PERIOD_MS;
 
     if (!Number.isSafeInteger(olderThanMs) || olderThanMs < 0)
       throw new Error("Invalid GC grace period");
 
-    if (!dryRun && this.activeSnapshots().length > 0)
-      throw new Error("Cannot delete objects with active snapshots");
-
     const current = await this.storage.get(this.keys.manifestKey);
 
-    const currentSnapshot: Snapshot = current
-      ? {
-          manifest: decodeManifest(current.data, this.keys),
-          storageVersion: current.version,
-        }
-      : {
-          manifest: emptyManifest(),
-          storageVersion: null,
-        };
+    const snapshot: Snapshot = {
+      manifest: current ? decodeManifest(current.data, this.keys) : emptyManifest(),
+      storageVersion: current?.version ?? null,
+    };
 
     const reachable = new Set<string>();
 
-    const snapshots = [currentSnapshot, ...this.activeSnapshots()];
-
-    for (const snapshot of snapshots) {
-      const references = await this.scanner.scan(snapshot);
-      for (const key of references) reachable.add(key);
+    for (const item of [snapshot, ...this.activeSnapshots()]) {
+      const refs = await this.scanner.scan(item);
+      for (const ref of refs) reachable.add(ref);
     }
 
-    const cutoff = Date.now() - olderThanMs;
-
     const objects = await this.storage.list(this.keys.objectPrefix);
+    const nodes = await this.storage.list(this.keys.indexNodePrefix);
+    const cutoff = Date.now() - olderThanMs;
 
     let candidates = 0;
     let deleted = 0;
 
-    for (const object of objects) {
-      this.keys.validateObjectKey(object.key);
+    for (const object of [...objects, ...nodes]) {
+      if (object.key.startsWith(this.keys.objectPrefix)) this.keys.validateObjectKey(object.key);
+      else this.keys.validateIndexNodeKey(object.key);
 
-      if (!Number.isFinite(object.createdAt) || !Number.isSafeInteger(object.createdAt))
-        throw new Error(`Invalid object creation timestamp: ${object.key}`);
+      if (!Number.isSafeInteger(object.createdAt))
+        throw new Error(`Invalid object timestamp: ${object.key}`);
 
       if (reachable.has(object.key) || object.createdAt > cutoff) continue;
 
@@ -96,6 +91,7 @@ export class GarbageCollector {
 
     return {
       scanned: objects.length,
+      nodesScanned: nodes.length,
       reachable: reachable.size,
       candidates,
       deleted,

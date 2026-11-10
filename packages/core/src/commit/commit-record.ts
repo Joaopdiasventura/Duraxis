@@ -53,5 +53,8 @@ export async function readCommitRecord(
   )
     throw new Error("Invalid commit transaction ID");
 
+  if (keys.commitKey(record.transactionId, object.data) != key)
+    throw new Error("Commit record identity mismatch");
+
   return record as unknown as CommitRecord;
 }

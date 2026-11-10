@@ -14,7 +14,9 @@ export class StorageKeyManager {
   public readonly manifestKey: string;
   public readonly objectPrefix: string;
   public readonly commitPrefix: string;
+  public readonly indexNodePrefix: string;
 
+  private readonly indexNodePattern: RegExp;
   private readonly objectPattern: RegExp;
   private readonly commitPattern: RegExp;
 
@@ -26,6 +28,11 @@ export class StorageKeyManager {
     this.manifestKey = `${namespace}/manifest`;
     this.objectPrefix = `${namespace}/objects/`;
     this.commitPrefix = `${namespace}/commits/`;
+    this.indexNodePrefix = `${namespace}/indexes/nodes/`;
+
+    this.indexNodePattern = new RegExp(
+      `^${escapeRegex(this.indexNodePrefix)}${UUID}-([a-f0-9]{64})$`,
+    );
 
     this.objectPattern = new RegExp(
       `^${escapeRegex(this.objectPrefix)}(${UUID})(?:-([a-f0-9]{64}))?$`,
@@ -79,5 +86,10 @@ export class StorageKeyManager {
     if (!match) throw new Error("Invalid or foreign Duraxis commit reference");
 
     assertDigest(data, match[2]);
+  }
+
+  public validateIndexNodeKey(key: string): void {
+    if (!this.indexNodePattern.test(key))
+      throw new Error("Invalid or foreign Duraxis index node reference");
   }
 }

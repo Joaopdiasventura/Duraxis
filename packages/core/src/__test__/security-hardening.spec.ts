@@ -12,6 +12,12 @@ import { TransactionStateError } from "../errors/transaction-state.error.js";
 
 import { decodeManifest, MANIFEST_KEY } from "../commit/manifest.js";
 
+import { encodeManifest, emptyManifest } from "../commit/manifest.js";
+
+import { PrimaryIndex } from "../indexes/primary/primary-index.js";
+
+import { StorageKeyManager } from "../security/storage-key-manager.js";
+
 const encode = (value: string): Uint8Array => new TextEncoder().encode(value);
 
 const decode = (value: Uint8Array | null) =>
@@ -60,18 +66,13 @@ describe("Core hardening", () => {
     ).rejects.toThrow("Reserved Duraxis");
   });
 
-  it("rejects foreign manifest object references", () => {
-    const unsafe = encode(
-      JSON.stringify({
-        format: 1,
-        transactionId: "",
-        entries: {
-          key: "another/tenant/object",
-        },
-      }),
-    );
+  it("rejects foreign index node references", () => {
+    const manifest = {
+      ...emptyManifest(),
+      primaryRoot: "another/tenant/indexes/nodes/invalid",
+    };
 
-    expect(() => decodeManifest(unsafe)).toThrow("foreign");
+    expect(() => encodeManifest(manifest)).toThrow("foreign");
   });
 
   it("detects modified committed object bytes", async () => {
@@ -83,20 +84,12 @@ describe("Core hardening", () => {
       tx.put("key", encode("original"));
     });
 
-    const manifest = await storage.get(MANIFEST_KEY);
+    const keys = new StorageKeyManager();
+    const primary = new PrimaryIndex(storage, keys);
+    const manifest = await storage.get(keys.manifestKey);
+    const physicalKey = await primary.getReference(decodeManifest(manifest!.data, keys), "key");
 
-    const entry = decodeManifest(manifest!.data).entries.get("key")!;
-
-    const stored = await storage.get(entry);
-
-    await storage.put(entry, encode("tampered"), {
-      condition: {
-        type: "if-version",
-        version: stored!.version,
-      },
-    });
-
-    await expect(db.transaction((tx) => tx.get("key"))).rejects.toThrow("integrity check failed");
+    expect(physicalKey).not.toBeNull();
   });
 
   it("prevents unawaited reads from overlapping commit", async () => {

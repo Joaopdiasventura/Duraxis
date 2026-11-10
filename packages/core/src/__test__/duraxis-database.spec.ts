@@ -5,6 +5,7 @@ import type { StorageDriver, WriteOptions, WriteResult } from "@duraxis/storage"
 import { DuraxisDatabase } from "../database/duraxis-database.js";
 import { TransactionConflictError } from "../errors/transaction-conflict.error.js";
 import { MANIFEST_KEY } from "../commit/manifest.js";
+import { CommitOutcomeUnknownError } from "../errors/commit-outcome-unknown.error.js";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -40,11 +41,10 @@ describe("DuraxisDatabase", () => {
 
     await expect(
       db.transaction((tx) => {
-        tx.put("a", encode("100"));
-        tx.put("b", encode("200"));
-        throw new Error("Business failure");
+        tx.put("a", encode("value-a"));
+        tx.put("b", encode("value-b"));
       }),
-    ).rejects.toThrow("Business failure");
+    ).rejects.toBeInstanceOf(CommitOutcomeUnknownError);
 
     await db.transaction(async (tx) => {
       expect(await tx.get("a")).toBeNull();

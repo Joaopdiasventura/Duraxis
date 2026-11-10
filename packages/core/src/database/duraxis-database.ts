@@ -14,16 +14,41 @@ import {
   type GarbageCollectionReport,
 } from "../gc/garbage-collector.js";
 
+import { ManifestReachabilityScanner } from "../gc/reachability-scanner.js";
+import { PrimaryIndex } from "../indexes/primary/primary-index.js";
+import { SecondaryIndexManager } from "../indexes/secondary/secondary-index-manager.js";
+import { BPlusTreeNodeStore } from "../indexes/bptree/bptree-node-store.js";
+import { IndexConsistencyChecker } from "../indexes/index-consistency-checker.js";
+import { prefixSuccessor } from "../indexes/index-key.js";
+
+import {
+  RECORD_PREFIX,
+  recordKey,
+  decodeDocument,
+  parseRecordKey,
+  type CollectionDefinition,
+  type SecondaryIndexDefinition,
+  type DocumentRecord,
+  type IndexScalar,
+} from "../catalog/collection-schema.js";
+
 export interface DuraxisDatabaseOptions {
   readonly storage: StorageDriver;
   readonly namespace?: string;
 }
 
+export interface CollectionRow {
+  readonly id: string;
+  readonly document: DocumentRecord;
+}
+
 export class DuraxisDatabase {
   private readonly storage: StorageDriver;
-  private readonly coordinator: CommitCoordinator;
   private readonly keys: StorageKeyManager;
+  private readonly coordinator: CommitCoordinator;
   private readonly recovery: RecoveryManager;
+  private readonly primary: PrimaryIndex;
+  private readonly secondary: SecondaryIndexManager;
 
   private readonly active = new Set<Snapshot>();
   private maintenance = false;
@@ -32,10 +57,10 @@ export class DuraxisDatabase {
   public constructor(options: DuraxisDatabaseOptions) {
     this.storage = options.storage;
     this.keys = new StorageKeyManager(options.namespace);
-
     this.coordinator = new CommitCoordinator(this.storage, this.keys);
-
     this.recovery = new RecoveryManager(this.storage, this.keys);
+    this.primary = new PrimaryIndex(this.storage, this.keys);
+    this.secondary = new SecondaryIndexManager(this.storage, this.keys);
   }
 
   public async transaction<T>(callback: (tx: Transaction) => Promise<T> | T): Promise<T> {
@@ -50,8 +75,7 @@ export class DuraxisDatabase {
       tx.abort();
       throw error;
     } finally {
-      tx.close();
-      this.active.delete(snapshot);
+      this.releaseSnapshot(snapshot, tx);
     }
   }
 
@@ -64,7 +88,96 @@ export class DuraxisDatabase {
         get: (key: string) => tx.get(key),
       });
     } finally {
-      tx.close();
+      this.releaseSnapshot(snapshot, tx);
+    }
+  }
+
+  public async defineCollection(schema: CollectionDefinition): Promise<void> {
+    await this.transaction((tx) => {
+      tx.defineCollection(schema);
+    });
+  }
+
+  public async addIndex(collection: string, index: SecondaryIndexDefinition): Promise<void> {
+    await this.transaction((tx) => {
+      tx.addIndex(collection, index);
+    });
+  }
+
+  public async getDocument(collection: string, id: string): Promise<DocumentRecord | null> {
+    return this.transaction((tx) => tx.getDocument(collection, id));
+  }
+
+  public async findByIndex(
+    collection: string,
+    indexName: string,
+    value: IndexScalar,
+    limit = 100,
+  ): Promise<CollectionRow[]> {
+    const snapshot = await this.acquireSnapshot();
+
+    try {
+      const ids = await this.secondary.lookupIds(
+        snapshot.manifest,
+        collection,
+        indexName,
+        value,
+        limit,
+      );
+
+      const rows: CollectionRow[] = [];
+
+      for (const id of ids) {
+        const bytes = await this.primary.read(snapshot.manifest, recordKey(collection, id));
+
+        if (bytes == null) throw new Error(`Index references missing record: ${collection}/${id}`);
+
+        rows.push({
+          id,
+          document: decodeDocument(bytes),
+        });
+      }
+
+      return rows;
+    } finally {
+      this.active.delete(snapshot);
+    }
+  }
+
+  public async scanCollection(collection: string, limit = 100): Promise<CollectionRow[]> {
+    if (!Number.isSafeInteger(limit) || limit < 0) throw new Error("Invalid scan limit");
+
+    const snapshot = await this.acquireSnapshot();
+
+    try {
+      if (!snapshot.manifest.catalog.has(collection))
+        throw new Error(`Unknown collection: ${collection}`);
+
+      const rows: CollectionRow[] = [];
+      if (limit == 0) return rows;
+
+      const prefix = new TextEncoder().encode(`${RECORD_PREFIX}${collection}/`);
+
+      const end = prefixSuccessor(prefix);
+
+      for await (const entry of this.primary.scanReferences(snapshot.manifest.primaryRoot, {
+        gte: prefix,
+        ...(end == null ? {} : { lt: end }),
+      })) {
+        const parsed = parseRecordKey(entry.key);
+
+        if (!parsed || parsed.collection != collection) continue;
+
+        rows.push({
+          id: parsed.id,
+          document: decodeDocument(await this.primary.readObject(entry.ref)),
+        });
+
+        if (rows.length >= limit) break;
+      }
+
+      return rows;
+    } finally {
       this.active.delete(snapshot);
     }
   }
@@ -79,27 +192,40 @@ export class DuraxisDatabase {
 
   public async verifyIntegrity(): Promise<{
     objects: number;
+    nodes: number;
+    indexes: number;
     commits: number;
   }> {
     const snapshot = await this.acquireSnapshot();
 
     try {
-      let objects = 0;
+      const scanner = new ManifestReachabilityScanner(this.keys, this.storage);
+      const nodes = new BPlusTreeNodeStore(this.storage, this.keys);
+      const reachable = await scanner.scan(snapshot);
 
-      for (const ref of snapshot.manifest.entries.values()) {
-        this.keys.validateObjectKey(ref);
+      let objectsCount = 0;
+      let nodesCount = 0;
 
-        const stored = await this.storage.get(ref);
+      for (const ref of reachable)
+        if (ref.startsWith(this.keys.objectPrefix)) {
+          await this.primary.readObject(ref);
+          objectsCount++;
+        } else {
+          this.keys.validateIndexNodeKey(ref);
+          await nodes.read(ref);
+          nodesCount++;
+        }
 
-        if (!stored) throw new Error(`Missing committed object: ${ref}`);
-
-        this.keys.verifyObject(ref, stored.data);
-        objects++;
-      }
-
+      const checker = new IndexConsistencyChecker(this.storage, this.keys);
+      const indexes = await checker.verify(snapshot.manifest);
       const commits = await this.recovery.verifyHistory();
 
-      return { objects, commits };
+      return {
+        objects: objectsCount,
+        nodes: nodesCount,
+        indexes,
+        commits,
+      };
     } finally {
       this.active.delete(snapshot);
     }
@@ -115,16 +241,28 @@ export class DuraxisDatabase {
     this.maintenance = true;
 
     try {
-      if (options.dryRun == false)
-        if (this.active.size > 0 || this.pendingSnapshotAcquisitions > 0)
-          throw new Error("Active transactions or pending snapshots prevent GC");
+      if (options.dryRun == false && (this.active.size > 0 || this.pendingSnapshotAcquisitions > 0))
+        throw new Error("Active transactions or pending snapshots prevent GC");
 
-      const collector = new GarbageCollector(this.storage, this.keys, () => [...this.active]);
+      const gc = new GarbageCollector(this.storage, this.keys, () => [...this.active]);
 
-      return await collector.collect(options);
+      return await gc.collect(options);
     } finally {
       this.maintenance = false;
     }
+  }
+
+  private releaseSnapshot(snapshot: Snapshot, tx: Transaction): void {
+    tx.close();
+
+    if (!tx.hasPendingReads) {
+      this.active.delete(snapshot);
+      return;
+    }
+
+    void tx.waitForReads().then(() => {
+      this.active.delete(snapshot);
+    });
   }
 
   private async acquireSnapshot(): Promise<Snapshot> {
@@ -138,7 +276,6 @@ export class DuraxisDatabase {
       if (this.maintenance) throw new Error("Database is in exclusive maintenance mode");
 
       this.active.add(snapshot);
-
       return snapshot;
     } finally {
       this.pendingSnapshotAcquisitions--;
@@ -147,14 +284,15 @@ export class DuraxisDatabase {
 
   private async createSnapshot(): Promise<Snapshot> {
     const stored = await this.storage.get(this.keys.manifestKey);
-    return stored
+
+    return stored == null
       ? {
-          manifest: decodeManifest(stored.data, this.keys),
-          storageVersion: stored.version,
-        }
-      : {
           manifest: emptyManifest(),
           storageVersion: null,
+        }
+      : {
+          manifest: decodeManifest(stored.data, this.keys),
+          storageVersion: stored.version,
         };
   }
 }

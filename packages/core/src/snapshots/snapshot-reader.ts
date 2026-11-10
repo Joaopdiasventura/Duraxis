@@ -1,34 +1,27 @@
 import type { StorageDriver } from "@duraxis/storage";
 
 import type { Snapshot } from "../commit/manifest.js";
+
 import { StorageKeyManager } from "../security/storage-key-manager.js";
+
+import { PrimaryIndex } from "../indexes/primary/primary-index.js";
 
 export interface SnapshotReader {
   get(key: string): Promise<Uint8Array | null>;
 }
 
 export class ManifestSnapshotReader implements SnapshotReader {
+  private readonly primary: PrimaryIndex;
+
   public constructor(
-    private readonly storage: StorageDriver,
+    storage: StorageDriver,
     private readonly snapshot: Snapshot,
-    private readonly keys: StorageKeyManager,
-  ) {}
+    keys: StorageKeyManager,
+  ) {
+    this.primary = new PrimaryIndex(storage, keys);
+  }
 
   public async get(key: string): Promise<Uint8Array | null> {
-    this.keys.validateLogicalKey(key);
-
-    const objectKey = this.snapshot.manifest.entries.get(key);
-
-    if (!objectKey) return null;
-
-    this.keys.validateObjectKey(objectKey);
-
-    const stored = await this.storage.get(objectKey);
-
-    if (!stored) throw new Error(`Missing committed storage object: ${objectKey}`);
-
-    this.keys.verifyObject(objectKey, stored.data);
-
-    return new Uint8Array(stored.data);
+    return this.primary.read(this.snapshot.manifest, key);
   }
 }

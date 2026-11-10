@@ -45,3 +45,31 @@ export type {
 export { BPlusTreeValidator } from "./indexes/bptree/bptree-validator.js";
 
 export type { BPlusTreeValidationResult } from "./indexes/bptree/bptree-validator.js";
+
+export { PrimaryIndex } from "./indexes/primary/primary-index.js";
+
+export {
+  SecondaryIndexManager,
+  UniqueIndexViolationError,
+} from "./indexes/secondary/secondary-index-manager.js";
+
+export { encodeScalar, encodeSecondaryKey, prefixSuccessor } from "./indexes/index-key.js";
+
+export {
+  validateCollection,
+  recordKey,
+  parseRecordKey,
+  indexId,
+  encodeDocument,
+  decodeDocument,
+  indexedValue,
+} from "./catalog/collection-schema.js";
+
+export type {
+  IndexScalar,
+  SecondaryIndexDefinition,
+  CollectionDefinition,
+  DocumentRecord,
+} from "./catalog/collection-schema.js";
+
+export type { CollectionRow } from "./database/duraxis-database.js";
