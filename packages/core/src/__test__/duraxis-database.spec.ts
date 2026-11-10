@@ -43,8 +43,10 @@ describe("DuraxisDatabase", () => {
       db.transaction((tx) => {
         tx.put("a", encode("value-a"));
         tx.put("b", encode("value-b"));
+
+        throw new Error("Simulated callback failure");
       }),
-    ).rejects.toBeInstanceOf(CommitOutcomeUnknownError);
+    ).rejects.toThrow("Simulated callback failure");
 
     await db.transaction(async (tx) => {
       expect(await tx.get("a")).toBeNull();
@@ -187,7 +189,7 @@ describe("DuraxisDatabase", () => {
         tx.put("a", encode("value-a"));
         tx.put("b", encode("value-b"));
       }),
-    ).rejects.toThrow("Simulated manifest failure");
+    ).rejects.toBeInstanceOf(CommitOutcomeUnknownError);
 
     await db.transaction(async (tx) => {
       expect(await tx.get("a")).toBeNull();

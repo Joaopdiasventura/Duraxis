@@ -90,6 +90,21 @@ describe("Core hardening", () => {
     const physicalKey = await primary.getReference(decodeManifest(manifest!.data, keys), "key");
 
     expect(physicalKey).not.toBeNull();
+
+    const original = await storage.get(physicalKey!);
+
+    expect(original).not.toBeNull();
+
+    const changed = await storage.put(physicalKey!, encode("corrupted-data"), {
+      condition: {
+        type: "if-version",
+        version: original!.version,
+      },
+    });
+
+    expect(changed.success).toBe(true);
+
+    await expect(db.transaction((tx) => tx.get("key"))).rejects.toThrow("integrity check failed");
   });
 
   it("prevents unawaited reads from overlapping commit", async () => {

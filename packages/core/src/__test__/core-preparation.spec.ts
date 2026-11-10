@@ -185,21 +185,25 @@ describe("Core preparation", () => {
     class DeferredStorage extends MemoryStorageDriver {
       private releaseList?: () => void;
       private signalList?: () => void;
+      private blockedOnce = false;
 
-      readonly listStarted = new Promise<void>((resolve) => {
+      public readonly listStarted = new Promise<void>((resolve) => {
         this.signalList = resolve;
       });
 
-      release(): void {
+      public release(): void {
         this.releaseList?.();
       }
 
       override async list(prefix: string) {
-        this.signalList?.();
+        if (!this.blockedOnce) {
+          this.blockedOnce = true;
 
-        await new Promise<void>((resolve) => {
-          this.releaseList = resolve;
-        });
+          await new Promise<void>((resolve) => {
+            this.releaseList = resolve;
+            this.signalList?.();
+          });
+        }
 
         return super.list(prefix);
       }

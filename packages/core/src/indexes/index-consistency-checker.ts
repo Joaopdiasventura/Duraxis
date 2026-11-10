@@ -56,7 +56,7 @@ export class IndexConsistencyChecker {
 
           const value = indexedValue(document, index.field);
 
-          if (value == undefined) continue;
+          if (value === undefined) continue;
 
           const key = encodeSecondaryKey(value, index.unique ? undefined : parsed.id);
 

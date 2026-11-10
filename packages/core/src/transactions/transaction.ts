@@ -275,7 +275,7 @@ export class Transaction {
   }
 
   private validateKey(key: string): void {
-    this.validateKey(key);
+    this.keys.validateLogicalKey(key);
     encodeIndexKey(new TextEncoder().encode(key));
   }
 }

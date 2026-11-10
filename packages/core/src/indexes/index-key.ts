@@ -56,7 +56,7 @@ export function encodeScalar(value: IndexScalar): Uint8Array {
 
 export function encodeSecondaryKey(value: IndexScalar, id?: string): Uint8Array {
   const scalar = encodeScalar(value);
-  return id == undefined ? scalar : concat(scalar, escapedString(id));
+  return id === undefined ? scalar : concat(scalar, escapedString(id));
 }
 
 export function prefixSuccessor(prefix: Uint8Array): Uint8Array | null {
