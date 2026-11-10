@@ -1,7 +1,5 @@
 export type NodeId = string;
-
 export type EncodedKey = string;
-
 export type EncodedValue = string;
 
 export interface LeafNode {
@@ -29,4 +27,20 @@ export interface ScanOptions {
   readonly lt?: Uint8Array;
   readonly lte?: Uint8Array;
   readonly limit?: number;
+}
+
+export type BatchOperation =
+  | {
+      readonly type: "put";
+      readonly key: Uint8Array;
+      readonly value: Uint8Array;
+    }
+  | {
+      readonly type: "delete";
+      readonly key: Uint8Array;
+    };
+
+export interface BPlusTreeNodeIO {
+  read(ref: NodeId): Promise<BPlusTreeNode>;
+  write(node: BPlusTreeNode): Promise<NodeId>;
 }

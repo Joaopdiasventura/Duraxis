@@ -1,12 +1,14 @@
 import type { BPlusTreeNode, EncodedKey } from "./bptree-node.js";
 
 const encoder = new TextEncoder();
-const decoder = new TextDecoder("utf-8", { fatal: true });
+const decoder = new TextDecoder("utf-8", {
+  fatal: true,
+});
 
-const MAX_NODE_BYTES = 1024 * 1024;
-const MAX_KEY_BYTES = 1024;
-const MAX_VALUE_BYTES = 256 * 1024;
-const MAX_NODE_KEYS = 4096;
+export const MAX_NODE_BYTES = 1024 * 1024;
+export const MAX_KEY_BYTES = 1024;
+export const MAX_VALUE_BYTES = 256 * 1024;
+export const MAX_NODE_KEYS = 4096;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value == "object" && value != null && !Array.isArray(value);
@@ -50,8 +52,8 @@ export function decodeIndexValue(value: string): Uint8Array {
   return Uint8Array.from(bytes);
 }
 
-export function compareKeys(left: EncodedKey, right: EncodedKey): number {
-  return left < right ? -1 : left > right ? 1 : 0;
+export function compareKeys(a: EncodedKey, b: EncodedKey): number {
+  return a < b ? -1 : a > b ? 1 : 0;
 }
 
 export function lowerBound(keys: readonly EncodedKey[], key: EncodedKey): number {
@@ -74,7 +76,6 @@ export function upperBound(keys: readonly EncodedKey[], key: EncodedKey): number
 
   while (low < high) {
     const mid = low + Math.floor((high - low) / 2);
-
     if (compareKeys(keys[mid]!, key) <= 0) low = mid + 1;
     else high = mid;
   }
@@ -83,21 +84,12 @@ export function upperBound(keys: readonly EncodedKey[], key: EncodedKey): number
 }
 
 export function validateNode(node: BPlusTreeNode): void {
-  if (
-    node.keys.length > MAX_NODE_KEYS ||
-    node.keys.some((key) => {
-      try {
-        decodeIndexKey(key);
-        return false;
-      } catch {
-        return true;
-      }
-    })
-  )
-    throw new Error("Invalid B+tree node keys");
+  if (node.keys.length > MAX_NODE_KEYS) throw new Error("Too many B+tree keys");
 
-  for (let index = 1; index < node.keys.length; index++)
-    if (compareKeys(node.keys[index - 1]!, node.keys[index]!) >= 0)
+  for (const key of node.keys) decodeIndexKey(key);
+
+  for (let i = 1; i < node.keys.length; i++)
+    if (compareKeys(node.keys[i - 1]!, node.keys[i]!) >= 0)
       throw new Error("B+tree keys must be strictly increasing");
 
   if (node.type == "leaf") {
@@ -108,10 +100,16 @@ export function validateNode(node: BPlusTreeNode): void {
     return;
   }
 
-  if (node.children.length != node.keys.length + 1) throw new Error("Invalid B+tree child count");
+  if (node.type == "internal") {
+    if (node.children.length != node.keys.length + 1) throw new Error("Invalid B+tree child count");
 
-  if (node.children.some((ref) => typeof ref != "string" || ref.length == 0))
-    throw new Error("Invalid B+tree child reference");
+    if (node.children.some((ref) => typeof ref != "string" || !ref))
+      throw new Error("Invalid B+tree child reference");
+
+    return;
+  }
+
+  throw new Error("Unknown B+tree node type");
 }
 
 export function encodeNode(node: BPlusTreeNode): Uint8Array {
@@ -119,13 +117,17 @@ export function encodeNode(node: BPlusTreeNode): Uint8Array {
 
   const bytes = encoder.encode(JSON.stringify(node));
 
-  if (bytes.length > MAX_NODE_BYTES) throw new Error("B+tree node exceeds size limit");
+  if (bytes.length > MAX_NODE_BYTES) throw new Error("B+tree node exceeds codec size limit");
 
   return bytes;
 }
 
+export function nodeSize(node: BPlusTreeNode): number {
+  return encodeNode(node).byteLength;
+}
+
 export function decodeNode(bytes: Uint8Array): BPlusTreeNode {
-  if (bytes.length > MAX_NODE_BYTES) throw new Error("B+tree node exceeds size limit");
+  if (bytes.byteLength > MAX_NODE_BYTES) throw new Error("B+tree node exceeds codec size limit");
 
   const value: unknown = JSON.parse(decoder.decode(bytes));
 
@@ -140,7 +142,7 @@ export function decodeNode(bytes: Uint8Array): BPlusTreeNode {
     if (
       Object.keys(value).sort().join() != "keys,type,values" ||
       !Array.isArray(value.values) ||
-      !value.values.every((item) => typeof item == "string")
+      !value.values.every((v) => typeof v == "string")
     )
       throw new Error("Invalid B+tree leaf");
 
@@ -158,7 +160,7 @@ export function decodeNode(bytes: Uint8Array): BPlusTreeNode {
     if (
       Object.keys(value).sort().join() != "children,keys,type" ||
       !Array.isArray(value.children) ||
-      !value.children.every((item) => typeof item == "string")
+      !value.children.every((v) => typeof v == "string")
     )
       throw new Error("Invalid B+tree internal node");
 

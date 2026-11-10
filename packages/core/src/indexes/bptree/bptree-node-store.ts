@@ -6,17 +6,17 @@ import { assertDigest, sha256 } from "../../integrity/integrity.js";
 
 import { StorageKeyManager } from "../../security/storage-key-manager.js";
 
-import type { BPlusTreeNode, NodeId } from "./bptree-node.js";
+import type { BPlusTreeNode, BPlusTreeNodeIO, NodeId } from "./bptree-node.js";
 
 import { decodeNode, encodeNode } from "./bptree-codec.js";
 
 const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
 
-function escapeRegex(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-export class BPlusTreeNodeStore {
+export class BPlusTreeNodeStore implements BPlusTreeNodeIO {
   private readonly prefix: string;
   private readonly pattern: RegExp;
 
@@ -25,7 +25,7 @@ export class BPlusTreeNodeStore {
     keys: StorageKeyManager,
   ) {
     this.prefix = `${keys.namespace}/indexes/nodes/`;
-    this.pattern = new RegExp(`^${escapeRegex(this.prefix)}${UUID}-([0-9a-f]{64})$`);
+    this.pattern = new RegExp(`^${escapeRegex(this.prefix)}${UUID}-([a-f0-9]{64})$`);
   }
 
   public get nodePrefix(): string {
@@ -43,9 +43,7 @@ export class BPlusTreeNodeStore {
 
     if (!stored) throw new Error(`Missing B+tree node: ${ref}`);
 
-    const digest = this.pattern.exec(ref)![1]!;
-
-    assertDigest(stored.data, digest);
+    assertDigest(stored.data, this.pattern.exec(ref)![1]!);
 
     const node = decodeNode(stored.data);
 

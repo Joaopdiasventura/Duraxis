@@ -34,4 +34,14 @@ export type { BPlusTreeOptions } from "./indexes/bptree/bptree.js";
 
 export { BPlusTreeNodeStore } from "./indexes/bptree/bptree-node-store.js";
 
-export type { NodeId, IndexEntry, ScanOptions } from "./indexes/bptree/bptree-node.js";
+export type {
+  NodeId,
+  IndexEntry,
+  ScanOptions,
+  BatchOperation,
+  BPlusTreeNodeIO,
+} from "./indexes/bptree/bptree-node.js";
+
+export { BPlusTreeValidator } from "./indexes/bptree/bptree-validator.js";
+
+export type { BPlusTreeValidationResult } from "./indexes/bptree/bptree-validator.js";
