@@ -5,6 +5,7 @@ export default defineConfig({
     projects: [
       "./packages/storage/vitest.config.ts",
       "./packages/storage-memory/vitest.config.ts",
+      "./packages/storage-disk/vitest.config.ts",
       "./packages/core/vitest.config.ts",
     ],
 

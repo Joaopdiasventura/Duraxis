@@ -197,6 +197,19 @@ importers:
 
   packages/storage: {}
 
+  packages/storage-disk:
+    dependencies:
+      '@duraxis/storage':
+        specifier: workspace:*
+        version: link:../storage
+    devDependencies:
+      '@duraxis/core':
+        specifier: workspace:*
+        version: link:../core
+      '@duraxis/storage-testkit':
+        specifier: workspace:*
+        version: link:../storage-testkit
+
   packages/storage-memory:
     dependencies:
       '@duraxis/storage':
