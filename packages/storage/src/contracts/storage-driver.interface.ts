@@ -2,6 +2,16 @@ import type { StorageObject, StorageObjectInfo } from "../types/storage-object.j
 import type { WriteOptions, DeleteOptions } from "../types/storage-options.js";
 import type { WriteResult, DeleteResult } from "../types/storage-result.js";
 
+export interface StorageDriverMetrics {
+  readonly reads: number;
+  readonly writes: number;
+  readonly deletes: number;
+  readonly lists: number;
+  readonly bytesRead: number;
+  readonly bytesWritten: number;
+  readonly synchronizationWaitMs: number;
+}
+
 export interface StorageDriver {
   get(key: string): Promise<StorageObject | null>;
 
@@ -10,4 +20,8 @@ export interface StorageDriver {
   delete(key: string, options: DeleteOptions): Promise<DeleteResult>;
 
   list(prefix: string): Promise<readonly StorageObjectInfo[]>;
+
+  close?(): Promise<void>;
+
+  getMetrics?(): Readonly<StorageDriverMetrics>;
 }

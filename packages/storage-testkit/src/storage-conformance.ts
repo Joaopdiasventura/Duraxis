@@ -1,11 +1,12 @@
 import { StorageDriver, WriteResult } from "@duraxis/storage";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 export type StorageDriverFactory = () => StorageDriver | Promise<StorageDriver>;
 
 export interface ConformanceOptions {
   name: string;
   createDriver: StorageDriverFactory;
+  destroyDriver?: (driver: StorageDriver) => void | Promise<void>;
 }
 
 const encode = (value: string): Uint8Array => new TextEncoder().encode(value);
@@ -37,6 +38,10 @@ export function defineStorageConformanceSuite(options: ConformanceOptions): void
 
     beforeEach(async () => {
       driver = await options.createDriver();
+    });
+
+    afterEach(async () => {
+      await options.destroyDriver?.(driver);
     });
 
     describe("key validation", () => {

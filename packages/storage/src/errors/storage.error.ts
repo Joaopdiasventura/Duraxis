@@ -1,5 +1,14 @@
 export type StorageErrorCode =
-  "INVALID_KEY" | "UNAVAILABLE" | "TIMEOUT" | "ACCESS_DENIED" | "UNKNOWN";
+  | "INVALID_KEY"
+  | "UNAVAILABLE"
+  | "TIMEOUT"
+  | "ACCESS_DENIED"
+  | "CORRUPTION"
+  | "CLOSED"
+  | "OWNERSHIP_CONFLICT"
+  | "RESOURCE_LIMIT"
+  | "OUTCOME_UNKNOWN"
+  | "UNKNOWN";
 
 export class StorageError extends Error {
   public constructor(

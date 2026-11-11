@@ -1,4 +1,4 @@
-export type { StorageDriver } from "./contracts/storage-driver.interface.js";
+export type { StorageDriver, StorageDriverMetrics } from "./contracts/storage-driver.interface.js";
 
 export type { StorageObject, StorageObjectInfo } from "./types/storage-object.js";
 
