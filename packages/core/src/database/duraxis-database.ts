@@ -1,6 +1,14 @@
 import type { StorageDriver } from "@duraxis/storage";
+import { randomBytes, randomUUID } from "node:crypto";
 
-import { decodeManifest, emptyManifest, type Snapshot } from "../commit/manifest.js";
+import {
+  decodeManifest,
+  emptyManifest,
+  encodeManifest,
+  type Manifest,
+  type Snapshot,
+} from "../commit/manifest.js";
+import { encodeCommitRecord } from "../commit/commit-record.js";
 
 import { CommitCoordinator } from "../commit/commit-coordinator.js";
 import { Transaction } from "../transactions/transaction.js";
@@ -30,6 +38,12 @@ import {
 import type { QueryOperator } from "../query/executor/operators/operators.js";
 import type { LogicalQuery } from "../query/model/query.js";
 import type { QueryRow } from "../query/executor/predicate.js";
+import { RuleBasedPlanner } from "../query/planner/rule-based-planner.js";
+import { PlanCompiler } from "../query/planner/plan-compiler.js";
+import { explainPhysicalPlan } from "../query/planner/explain.js";
+import type { ExplainResult, PhysicalPlan } from "../query/planner/physical-plan.js";
+import { TransactionConflictError } from "../errors/transaction-conflict.error.js";
+import { CommitOutcomeUnknownError } from "../errors/commit-outcome-unknown.error.js";
 
 import {
   RECORD_PREFIX,
@@ -45,11 +59,25 @@ import {
 export interface DuraxisDatabaseOptions {
   readonly storage: StorageDriver;
   readonly namespace?: string;
+  readonly cursorSigningKey?: Uint8Array;
 }
 
 export interface CollectionRow {
   readonly id: string;
   readonly document: DocumentRecord;
+}
+
+export interface DuraxisMetrics {
+  readonly transactionsStarted: number;
+  readonly transactionsCommitted: number;
+  readonly transactionConflicts: number;
+  readonly commitOutcomesUnknown: number;
+  readonly commitDurationMs: number;
+  readonly queries: number;
+  readonly queryDurationMs: number;
+  readonly garbageCollections: number;
+  readonly garbageCollectionDurationMs: number;
+  readonly storage?: ReturnType<NonNullable<StorageDriver["getMetrics"]>>;
 }
 
 export class DuraxisDatabase {
@@ -59,10 +87,25 @@ export class DuraxisDatabase {
   private readonly recovery: RecoveryManager;
   private readonly primary: PrimaryIndex;
   private readonly secondary: SecondaryIndexManager;
+  private readonly cursorSigningKey: Uint8Array;
+  private readonly planner = new RuleBasedPlanner();
+  private readonly planCompiler = new PlanCompiler();
+  private readonly metrics = {
+    transactionsStarted: 0,
+    transactionsCommitted: 0,
+    transactionConflicts: 0,
+    commitOutcomesUnknown: 0,
+    commitDurationMs: 0,
+    queries: 0,
+    queryDurationMs: 0,
+    garbageCollections: 0,
+    garbageCollectionDurationMs: 0,
+  };
 
   private readonly active = new Set<Snapshot>();
   private maintenance = false;
   private pendingSnapshotAcquisitions = 0;
+  private closed = false;
 
   public constructor(options: DuraxisDatabaseOptions) {
     this.storage = options.storage;
@@ -71,17 +114,30 @@ export class DuraxisDatabase {
     this.recovery = new RecoveryManager(this.storage, this.keys);
     this.primary = new PrimaryIndex(this.storage, this.keys);
     this.secondary = new SecondaryIndexManager(this.storage, this.keys);
+    this.cursorSigningKey =
+      options.cursorSigningKey == null ? randomBytes(32) : new Uint8Array(options.cursorSigningKey);
+    if (this.cursorSigningKey.byteLength < 32)
+      throw new Error("Cursor signing key must contain at least 32 bytes");
   }
 
   public async transaction<T>(callback: (tx: Transaction) => Promise<T> | T): Promise<T> {
+    this.metrics.transactionsStarted++;
     const snapshot = await this.acquireSnapshot();
-    const tx = new Transaction(this.storage, snapshot, this.keys);
+    const tx = new Transaction(this.storage, snapshot, this.keys, this.cursorSigningKey);
 
     try {
       const result = await callback(tx);
-      await this.coordinator.commit(tx);
+      const started = performance.now();
+      try {
+        await this.coordinator.commit(tx);
+      } finally {
+        this.metrics.commitDurationMs += performance.now() - started;
+      }
+      this.metrics.transactionsCommitted++;
       return result;
     } catch (error) {
+      if (error instanceof TransactionConflictError) this.metrics.transactionConflicts++;
+      if (error instanceof CommitOutcomeUnknownError) this.metrics.commitOutcomesUnknown++;
       tx.abort();
       throw error;
     } finally {
@@ -91,7 +147,7 @@ export class DuraxisDatabase {
 
   public async snapshot<T>(callback: (reader: SnapshotReader) => Promise<T> | T): Promise<T> {
     const snapshot = await this.acquireSnapshot();
-    const tx = new Transaction(this.storage, snapshot, this.keys);
+    const tx = new Transaction(this.storage, snapshot, this.keys, this.cursorSigningKey);
 
     try {
       return await callback({
@@ -118,40 +174,119 @@ export class DuraxisDatabase {
     await this.transaction((tx) => tx.removeIndex(collection, indexName));
   }
 
+  public query(query: LogicalQuery, options?: QueryExecutorOptions): AsyncIterable<QueryRow>;
   public query(
     query: LogicalQuery,
     source: QueryOperator,
     options?: QueryExecutorOptions,
+  ): AsyncIterable<QueryRow>;
+  public query(
+    query: LogicalQuery,
+    sourceOrOptions?: QueryOperator | QueryExecutorOptions,
+    explicitOptions?: QueryExecutorOptions,
   ): AsyncIterable<QueryRow> {
     const database = this;
 
     return (async function* () {
+      const started = performance.now();
+      database.metrics.queries++;
       const snapshot = await database.acquireSnapshot();
       const context = new QueryContext(database.storage, snapshot, database.keys);
 
       try {
-        yield* new QueryExecutor(options).execute(context, query, source);
+        const explicit = database.isOperator(sourceOrOptions) ? sourceOrOptions : undefined;
+        const options: QueryExecutorOptions | undefined = explicit
+          ? explicitOptions
+          : (sourceOrOptions as QueryExecutorOptions | undefined);
+        const source =
+          explicit ??
+          database.planCompiler.compile(
+            database.planner.plan(query, context.catalog),
+            context.catalog,
+          );
+        yield* new QueryExecutor(database.queryOptions(options)).execute(context, query, source);
       } finally {
+        database.metrics.queryDurationMs += performance.now() - started;
         context.close();
         database.active.delete(snapshot);
       }
     })();
   }
 
-  public async queryPage(
+  public queryPage(query: LogicalQuery, options?: QueryExecutorOptions): Promise<QueryPage>;
+  public queryPage(
     query: LogicalQuery,
     source: QueryOperator,
     options?: QueryExecutorOptions,
+  ): Promise<QueryPage>;
+  public async queryPage(
+    query: LogicalQuery,
+    sourceOrOptions?: QueryOperator | QueryExecutorOptions,
+    explicitOptions?: QueryExecutorOptions,
   ): Promise<QueryPage> {
+    const started = performance.now();
+    this.metrics.queries++;
     const snapshot = await this.acquireSnapshot();
     const context = new QueryContext(this.storage, snapshot, this.keys);
-    
+
     try {
-      return await new QueryExecutor(options).page(context, query, source);
+      const explicit = this.isOperator(sourceOrOptions) ? sourceOrOptions : undefined;
+      const options: QueryExecutorOptions | undefined = explicit
+        ? explicitOptions
+        : (sourceOrOptions as QueryExecutorOptions | undefined);
+      const source =
+        explicit ??
+        this.planCompiler.compile(this.planner.plan(query, context.catalog), context.catalog);
+      return await new QueryExecutor(this.queryOptions(options)).page(context, query, source);
     } finally {
+      this.metrics.queryDurationMs += performance.now() - started;
       context.close();
       this.active.delete(snapshot);
     }
+  }
+
+  public async queryAll(
+    query: LogicalQuery,
+    options?: QueryExecutorOptions,
+  ): Promise<readonly QueryRow[]> {
+    const rows: QueryRow[] = [];
+    for await (const row of this.query(query, options)) rows.push(row);
+    return rows;
+  }
+
+  public async explain(query: LogicalQuery): Promise<ExplainResult> {
+    const snapshot = await this.acquireSnapshot();
+    try {
+      return explainPhysicalPlan(this.planner.plan(query, snapshot.manifest.catalog));
+    } finally {
+      this.active.delete(snapshot);
+    }
+  }
+
+  public executePlan(
+    query: LogicalQuery,
+    plan: PhysicalPlan,
+    options?: QueryExecutorOptions,
+  ): AsyncIterable<QueryRow> {
+    if (plan.collection != query.collection) throw new Error("Plan and query collections differ");
+    if (
+      plan.limit != query.limit ||
+      JSON.stringify(plan.projection ?? null) != JSON.stringify(query.projection ?? null) ||
+      JSON.stringify(plan.requiredOrdering) != JSON.stringify(query.orderBy ?? [])
+    )
+      throw new Error("Physical plan is incompatible with the logical query");
+    const database = this;
+    return (async function* () {
+      const snapshot = await database.acquireSnapshot();
+      const context = new QueryContext(database.storage, snapshot, database.keys);
+      try {
+        const source = database.planCompiler.compile(plan, context.catalog);
+        yield* new QueryExecutor(database.queryOptions(options)).execute(context, query, source);
+      } finally {
+        context.close();
+        database.active.delete(snapshot);
+      }
+    })();
   }
 
   public async getDocument(collection: string, id: string): Promise<DocumentRecord | null> {
@@ -240,6 +375,48 @@ export class DuraxisDatabase {
     return this.recovery.verifyHistory();
   }
 
+  /** Starts a new verifiable commit-history chain without changing data roots. */
+  public async checkpointHistory(): Promise<string> {
+    if (this.closed) throw new Error("Database is closed");
+    if (this.maintenance || this.active.size || this.pendingSnapshotAcquisitions)
+      throw new Error("History checkpoint requires exclusive database maintenance");
+    this.maintenance = true;
+    const transactionId = randomUUID();
+    try {
+      const snapshot = await this.createSnapshot();
+      const recordBytes = encodeCommitRecord({ format: 1, transactionId, previous: null });
+      const commitHead = this.keys.commitKey(transactionId, recordBytes);
+      const record = await this.storage.put(commitHead, recordBytes, {
+        condition: { type: "if-absent" },
+      });
+      if (!record.success) throw new Error("Unexpected checkpoint record collision");
+      const manifest: Manifest = {
+        ...snapshot.manifest,
+        transactionId,
+        commitHead,
+      };
+      let published;
+      try {
+        published = await this.storage.put(
+          this.keys.manifestKey,
+          encodeManifest(manifest, this.keys),
+          {
+            condition:
+              snapshot.storageVersion == null
+                ? { type: "if-absent" }
+                : { type: "if-version", version: snapshot.storageVersion },
+          },
+        );
+      } catch (cause) {
+        throw new CommitOutcomeUnknownError(transactionId, cause);
+      }
+      if (!published.success) throw new TransactionConflictError();
+      return transactionId;
+    } finally {
+      this.maintenance = false;
+    }
+  }
+
   public async verifyIntegrity(): Promise<{
     objects: number;
     nodes: number;
@@ -285,6 +462,8 @@ export class DuraxisDatabase {
     storage: StorageDriver,
     options: GarbageCollectionOptions = {},
   ): Promise<GarbageCollectionReport> {
+    const started = performance.now();
+    this.metrics.garbageCollections++;
     if (storage != this.storage) throw new Error("GC driver must match database storage");
     if (this.maintenance) throw new Error("Maintenance already active");
 
@@ -298,6 +477,7 @@ export class DuraxisDatabase {
 
       return await gc.collect(options);
     } finally {
+      this.metrics.garbageCollectionDurationMs += performance.now() - started;
       this.maintenance = false;
     }
   }
@@ -315,7 +495,21 @@ export class DuraxisDatabase {
     });
   }
 
+  private queryOptions(options?: QueryExecutorOptions): QueryExecutorOptions {
+    return {
+      ...options,
+      cursorSigningKey: options?.cursorSigningKey ?? this.cursorSigningKey,
+    };
+  }
+
+  private isOperator(
+    value: QueryOperator | QueryExecutorOptions | undefined,
+  ): value is QueryOperator {
+    return value != null && typeof (value as QueryOperator).execute == "function";
+  }
+
   private async acquireSnapshot(): Promise<Snapshot> {
+    if (this.closed) throw new Error("Database is closed");
     if (this.maintenance) throw new Error("Database is in exclusive maintenance mode");
 
     this.pendingSnapshotAcquisitions++;
@@ -330,6 +524,21 @@ export class DuraxisDatabase {
     } finally {
       this.pendingSnapshotAcquisitions--;
     }
+  }
+
+  public getMetrics(): DuraxisMetrics {
+    return {
+      ...this.metrics,
+      ...(this.storage.getMetrics ? { storage: this.storage.getMetrics() } : {}),
+    };
+  }
+
+  public async close(options: { readonly closeStorage?: boolean } = {}): Promise<void> {
+    if (this.closed) return;
+    if (this.active.size || this.pendingSnapshotAcquisitions)
+      throw new Error("Cannot close database with active transactions or queries");
+    this.closed = true;
+    if (options.closeStorage) await this.storage.close?.();
   }
 
   private async createSnapshot(): Promise<Snapshot> {

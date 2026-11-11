@@ -191,7 +191,7 @@ export function validateDocument(
     else {
       if (fields && schema.allowAdditionalFields === false)
         throw new Error(`Unknown document field: ${name}`);
-    
+
       result[name] = value;
     }
   }

@@ -47,6 +47,7 @@ function validateValue(
 }
 
 function field(schema: CollectionDefinition, name: string): FieldDefinition | undefined {
+  if (name == "$id") return { type: "string", required: true, nullable: false };
   if (!isValidSchemaName(name)) throw new Error(`Invalid query field: ${name}`);
 
   const definition = fieldDefinition(schema, name);
@@ -119,34 +120,49 @@ export function validateQuery(
 ): CollectionDefinition {
   if (!query || typeof query != "object" || !isValidSchemaName(query.collection))
     throw new Error("Invalid logical query");
+
   const schema = catalog.get(query.collection);
   if (!schema) throw new Error(`Unknown collection: ${query.collection}`);
+
   if (query.where) predicate(schema, query.where, 0);
+
   const orders = new Set<string>();
+
   for (const order of query.orderBy ?? []) {
     field(schema, order.field);
+
     if (order.direction != "ASC" && order.direction != "DESC")
       throw new Error("Invalid query order");
+
     if (orders.has(order.field)) throw new Error(`Duplicate order field: ${order.field}`);
     orders.add(order.field);
   }
+
   const projection = new Set<string>();
+
   for (const name of query.projection ?? []) {
+    if (name == "$id") throw new Error("Record ID is already returned outside the document");
+
     field(schema, name);
     if (projection.has(name)) throw new Error(`Duplicate projection field: ${name}`);
+
     projection.add(name);
   }
+
   if (query.projection && query.projection.length == 0)
     throw new Error("Projection cannot be empty");
+
   if (
     query.limit != null &&
     (!Number.isSafeInteger(query.limit) || query.limit < 0 || query.limit > 1_000_000)
   )
     throw new Error("Invalid query limit");
+
   if (
     query.cursor != null &&
     (typeof query.cursor != "string" || query.cursor.length == 0 || query.cursor.length > 16_384)
   )
     throw new Error("Invalid query cursor");
+
   return schema;
 }

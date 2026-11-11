@@ -13,7 +13,12 @@ import {
   type SecondaryIndexDefinition,
   type IndexScalar,
 } from "../../catalog/collection-schema.js";
-import { encodeSecondaryKey, prefixSuccessor, type EncodedIndexBounds } from "../index-key.js";
+import {
+  compareBytes,
+  encodeSecondaryKey,
+  prefixSuccessor,
+  type EncodedIndexBounds,
+} from "../index-key.js";
 import { PrimaryIndex } from "../primary/primary-index.js";
 import { StorageKeyManager } from "../../security/storage-key-manager.js";
 import { BPlusTree } from "../bptree/bptree.js";
@@ -32,6 +37,9 @@ interface RecordChange {
 export interface SecondaryIndexScanOptions {
   readonly eq?: IndexScalar | readonly IndexScalar[];
   readonly prefix?: readonly IndexScalar[];
+  /** Logical range on the component immediately following prefix. */
+  readonly range?: SecondaryIndexLogicalRange;
+  /** Legacy shorthand: preceding tuple values are treated as an equality prefix. */
   readonly gt?: readonly IndexScalar[];
   readonly gte?: readonly IndexScalar[];
   readonly lt?: readonly IndexScalar[];
@@ -40,6 +48,13 @@ export interface SecondaryIndexScanOptions {
   readonly limit?: number;
   readonly signal?: AbortSignal;
   readonly metrics?: ScanMetrics;
+}
+
+export interface SecondaryIndexLogicalRange {
+  readonly gt?: IndexScalar;
+  readonly gte?: IndexScalar;
+  readonly lt?: IndexScalar;
+  readonly lte?: IndexScalar;
 }
 
 export interface SecondaryIndexEntry {
@@ -75,6 +90,91 @@ function entryKey(
 
 function keyId(key: Uint8Array): string {
   return Buffer.from(key).toString("hex");
+}
+
+function hasValue(value: unknown): boolean {
+  return value !== undefined;
+}
+
+export function secondaryIndexBounds(
+  index: SecondaryIndexDefinition,
+  options: SecondaryIndexScanOptions,
+): EncodedIndexBounds {
+  const hasEquality = options.eq !== undefined;
+  const legacy = [options.gt, options.gte, options.lt, options.lte].filter(
+    (value): value is readonly IndexScalar[] => value !== undefined,
+  );
+  if (hasEquality && (options.prefix || options.range || legacy.length))
+    throw new Error("Equality cannot be combined with index ranges");
+  if (options.range && legacy.length) throw new Error("Use either range or tuple range shorthands");
+  const orders = indexFields(index).map((part) => part.order);
+  const encode = (values: readonly IndexScalar[]) => {
+    if (values.length == 0 || values.length > orders.length)
+      throw new Error("Invalid compound key arity");
+    return encodeSecondaryKey(values, undefined, orders.slice(0, values.length));
+  };
+  if (hasEquality) {
+    const values = Array.isArray(options.eq) ? options.eq : [options.eq as IndexScalar];
+    const start = encode(values);
+    const end = prefixSuccessor(start);
+    return { gte: start, ...(end == null ? {} : { lt: end }) };
+  }
+
+  let prefix = options.prefix ?? [];
+  let range = options.range;
+  if (legacy.length) {
+    if (options.prefix) throw new Error("Tuple range shorthands already contain their prefix");
+    const arity = legacy[0]!.length;
+    if (arity == 0 || legacy.some((value) => value.length != arity))
+      throw new Error("Index range arity mismatch");
+    prefix = legacy[0]!.slice(0, -1);
+    const encodedPrefix = prefix.length ? encode(prefix) : new Uint8Array();
+    for (const value of legacy.slice(1)) {
+      const other = value.slice(0, -1);
+      const encoded = other.length ? encode(other) : new Uint8Array();
+      if (compareBytes(encodedPrefix, encoded) != 0)
+        throw new Error("Compound range bounds must share an equality prefix");
+    }
+    range = {
+      ...(options.gt ? { gt: options.gt.at(-1)! } : {}),
+      ...(options.gte ? { gte: options.gte.at(-1)! } : {}),
+      ...(options.lt ? { lt: options.lt.at(-1)! } : {}),
+      ...(options.lte ? { lte: options.lte.at(-1)! } : {}),
+    };
+  }
+  if (prefix.length > orders.length) throw new Error("Invalid compound prefix arity");
+  const bounds: { gte?: Uint8Array; lt?: Uint8Array } = {};
+  if (prefix.length) {
+    const start = encode(prefix);
+    bounds.gte = start;
+    const end = prefixSuccessor(start);
+    if (end) bounds.lt = end;
+  }
+  if (!range) return bounds;
+  if (prefix.length >= orders.length) throw new Error("Range has no remaining index component");
+  if (hasValue(range.gt) && hasValue(range.gte)) throw new Error("Use either gt or gte");
+  if (hasValue(range.lt) && hasValue(range.lte)) throw new Error("Use either lt or lte");
+  for (const value of [range.gt, range.gte, range.lt, range.lte])
+    if (value === null) throw new Error("Null does not support range comparison");
+  const componentOrder = orders[prefix.length]!;
+  const key = (value: IndexScalar) => encode([...prefix, value]);
+  const after = (value: IndexScalar) => {
+    const successor = prefixSuccessor(key(value));
+    if (!successor) throw new Error("Index bound has no successor");
+    return successor;
+  };
+  if (componentOrder == "ASC") {
+    if (range.gte !== undefined) bounds.gte = key(range.gte);
+    if (range.gt !== undefined) bounds.gte = after(range.gt);
+    if (range.lt !== undefined) bounds.lt = key(range.lt);
+    if (range.lte !== undefined) bounds.lt = after(range.lte);
+  } else {
+    if (range.gte !== undefined) bounds.lt = after(range.gte);
+    if (range.gt !== undefined) bounds.lt = key(range.gt);
+    if (range.lte !== undefined) bounds.gte = key(range.lte);
+    if (range.lt !== undefined) bounds.gte = after(range.lt);
+  }
+  return bounds;
 }
 
 export class UniqueIndexViolationError extends Error {
@@ -237,50 +337,6 @@ export class SecondaryIndexManager {
     return { schema, index, root: manifest.indexRoots.get(id)! };
   }
 
-  private bounds(
-    index: SecondaryIndexDefinition,
-    options: SecondaryIndexScanOptions,
-  ): EncodedIndexBounds {
-    const eq =
-      options.eq == null
-        ? undefined
-        : Array.isArray(options.eq)
-          ? options.eq
-          : [options.eq as IndexScalar];
-    if (eq && (options.prefix || options.gt || options.gte || options.lt || options.lte))
-      throw new Error("Equality cannot be combined with index ranges");
-    if (options.prefix && (options.gt || options.gte || options.lt || options.lte))
-      throw new Error("Prefix cannot be combined with index ranges");
-    if (options.gt && options.gte) throw new Error("Use either gt or gte");
-    if (options.lt && options.lte) throw new Error("Use either lt or lte");
-    const orders = indexFields(index).map((part) => part.order);
-    const encode = (values: readonly IndexScalar[]) => {
-      if (values.length == 0 || values.length > orders.length)
-        throw new Error("Invalid compound key arity");
-      return encodeSecondaryKey(values, undefined, orders.slice(0, values.length));
-    };
-    const prefix = eq ?? options.prefix;
-    if (prefix) {
-      const start = encode(prefix);
-      const end = prefixSuccessor(start);
-      return { gte: start, ...(end == null ? {} : { lt: end }) };
-    }
-    const bounds: { gt?: Uint8Array; gte?: Uint8Array; lt?: Uint8Array; lte?: Uint8Array } = {};
-    if (options.gte) bounds.gte = encode(options.gte);
-    if (options.gt) {
-      const next = prefixSuccessor(encode(options.gt));
-      if (next) bounds.gte = next;
-      else bounds.gt = encode(options.gt);
-    }
-    if (options.lt) bounds.lt = encode(options.lt);
-    if (options.lte) {
-      const next = prefixSuccessor(encode(options.lte));
-      if (next) bounds.lt = next;
-      else bounds.lte = encode(options.lte);
-    }
-    return bounds;
-  }
-
   /** Ordered, incremental access that never materializes the ID set. */
   public async *scanIds(
     manifest: Manifest,
@@ -293,7 +349,7 @@ export class SecondaryIndexManager {
     if (!Number.isSafeInteger(limit) || limit < 0) throw new Error("Invalid query limit");
     if (root == null || limit == 0) return;
     const tree = new BPlusTree(this.nodes);
-    const bounds = this.bounds(index, options);
+    const bounds = secondaryIndexBounds(index, options);
     for await (const entry of tree.scan(root, {
       ...bounds,
       direction: options.direction,

@@ -17,7 +17,9 @@ function value(
   schema: CollectionDefinition,
   document: DocumentRecord,
   field: string,
+  id?: string,
 ): IndexScalar | undefined {
+  if (field == "$id") return id;
   return indexedValue(document, field, fieldDefinition(schema, field));
 }
 
@@ -35,10 +37,11 @@ export function evaluatePredicate(
   schema: CollectionDefinition,
   document: DocumentRecord,
   predicate: QueryPredicate,
+  id?: string,
 ): boolean {
   switch (predicate.type) {
     case "comparison": {
-      const actual = value(schema, document, predicate.field);
+      const actual = value(schema, document, predicate.field, id);
       if (actual === undefined) return false;
 
       const expected = normalizeExpected(schema, predicate.field, predicate.value);
@@ -61,7 +64,7 @@ export function evaluatePredicate(
     }
 
     case "in": {
-      const actual = value(schema, document, predicate.field);
+      const actual = value(schema, document, predicate.field, id);
       return (
         actual !== undefined &&
         predicate.values.some(
@@ -72,19 +75,23 @@ export function evaluatePredicate(
     }
 
     case "isNull":
-      return Object.hasOwn(document, predicate.field) && document[predicate.field] === null;
+      return (
+        predicate.field != "$id" &&
+        Object.hasOwn(document, predicate.field) &&
+        document[predicate.field] === null
+      );
 
     case "isMissing":
-      return !Object.hasOwn(document, predicate.field);
+      return predicate.field != "$id" && !Object.hasOwn(document, predicate.field);
 
     case "and":
-      return predicate.predicates.every((item) => evaluatePredicate(schema, document, item));
+      return predicate.predicates.every((item) => evaluatePredicate(schema, document, item, id));
 
     case "or":
-      return predicate.predicates.some((item) => evaluatePredicate(schema, document, item));
+      return predicate.predicates.some((item) => evaluatePredicate(schema, document, item, id));
 
     case "not":
-      return !evaluatePredicate(schema, document, predicate.predicate);
+      return !evaluatePredicate(schema, document, predicate.predicate, id);
   }
 }
 
@@ -104,8 +111,8 @@ export function compareRows(
   b: QueryRow,
 ): number {
   for (const order of orders) {
-    const av = value(schema, a.document, order.field);
-    const bv = value(schema, b.document, order.field);
+    const av = value(schema, a.document, order.field, a.id);
+    const bv = value(schema, b.document, order.field, b.id);
 
     let comparison: number;
 

@@ -1,6 +1,6 @@
 export { DuraxisDatabase } from "./database/duraxis-database.js";
 
-export type { DuraxisDatabaseOptions } from "./database/duraxis-database.js";
+export type { DuraxisDatabaseOptions, DuraxisMetrics } from "./database/duraxis-database.js";
 
 export { Transaction } from "./transactions/transaction.js";
 
@@ -53,11 +53,13 @@ export { PrimaryIndex } from "./indexes/primary/primary-index.js";
 export {
   SecondaryIndexManager,
   UniqueIndexViolationError,
+  secondaryIndexBounds,
 } from "./indexes/secondary/secondary-index-manager.js";
 
 export type {
   SecondaryIndexScanOptions,
   SecondaryIndexEntry,
+  SecondaryIndexLogicalRange,
 } from "./indexes/secondary/secondary-index-manager.js";
 
 export {
@@ -112,6 +114,7 @@ export type {
   QueryPredicate,
   QueryOrder,
   ComparisonOperator,
+  LogicalIndexRange,
   AccessPath,
 } from "./query/model/query.js";
 
@@ -144,3 +147,12 @@ export type {
 } from "./query/executor/operators/operators.js";
 
 export { ReferenceQueryExecutor } from "./query/testing/reference-query-executor.js";
+
+export { PredicateAnalyzer } from "./query/planner/predicate-analyzer.js";
+export type { FieldConstraint, PredicateAnalysis } from "./query/planner/predicate-analyzer.js";
+export { AccessPathEnumerator } from "./query/planner/access-path-enumerator.js";
+export type { AccessCandidate } from "./query/planner/access-path-enumerator.js";
+export { RuleBasedPlanner } from "./query/planner/rule-based-planner.js";
+export { PlanCompiler } from "./query/planner/plan-compiler.js";
+export { explainPhysicalPlan } from "./query/planner/explain.js";
+export type { PhysicalAccess, PhysicalPlan, ExplainResult } from "./query/planner/physical-plan.js";

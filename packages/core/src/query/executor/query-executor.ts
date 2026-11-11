@@ -45,9 +45,12 @@ class CursorAfter implements QueryOperator {
 
       for (let i = 0; i < this.orderBy.length; i++) {
         const order = this.orderBy[i]!;
-        const actualRaw = Object.hasOwn(row.document, order.field)
-          ? row.document[order.field]
-          : undefined;
+        const actualRaw =
+          order.field == "$id"
+            ? row.id
+            : Object.hasOwn(row.document, order.field)
+              ? row.document[order.field]
+              : undefined;
 
         let actual: IndexScalar | undefined;
 
@@ -89,6 +92,7 @@ export interface QueryPage {
 export interface QueryExecutorOptions {
   readonly maxSortRowsInMemory?: number;
   readonly sortSpill?: SortSpillStore;
+  readonly cursorSigningKey?: Uint8Array;
 }
 
 export class QueryExecutor {
@@ -120,6 +124,7 @@ export class QueryExecutor {
     query: LogicalQuery,
     source: QueryOperator,
     forceDeterministicSort = false,
+    executionLimit: number | undefined = query.limit,
   ): QueryOperator {
     validateQuery(query, context.catalog);
     let operator = source;
@@ -128,7 +133,8 @@ export class QueryExecutor {
 
     const orderBy = query.orderBy ?? [];
 
-    if (forceDeterministicSort || query.orderBy || query.cursor)
+    const needsOrdering = forceDeterministicSort || query.orderBy != null || query.cursor != null;
+    if (needsOrdering && !this.orderingSatisfies(operator, orderBy))
       operator = new Sort(operator, query.collection, orderBy, {
         maxRowsInMemory: this.options.maxSortRowsInMemory,
         spill: this.options.sortSpill,
@@ -139,14 +145,34 @@ export class QueryExecutor {
         query.cursor,
         context.generation,
         context.catalog.get(query.collection)!,
-        orderBy,
+        query,
+        this.signingKey(),
       );
 
       operator = new CursorAfter(operator, orderBy, cursor.values, cursor.id, query.collection);
     }
 
-    if (query.limit != null) operator = new Limit(operator, query.limit);
+    if (executionLimit != null) operator = new Limit(operator, executionLimit);
     return operator;
+  }
+
+  private orderingSatisfies(operator: QueryOperator, requested: readonly QueryOrder[]): boolean {
+    const produced = operator.ordering;
+    return (
+      produced?.deterministic == true &&
+      produced.fields.length == requested.length &&
+      produced.fields.every(
+        (field, index) =>
+          field.field == requested[index]!.field && field.direction == requested[index]!.direction,
+      )
+    );
+  }
+
+  private signingKey(): Uint8Array {
+    const key = this.options.cursorSigningKey;
+    if (!(key instanceof Uint8Array) || key.byteLength < 32)
+      throw new Error("Cursor operations require a signing key of at least 32 bytes");
+    return key;
   }
 
   public execute(
@@ -164,16 +190,24 @@ export class QueryExecutor {
     query: LogicalQuery,
     source: QueryOperator,
   ): Promise<QueryPage> {
-    const operator = this.semanticPipeline(context, query, source, true);
+    const lookahead = query.limit == null ? undefined : query.limit + 1;
+    const operator = this.semanticPipeline(context, query, source, true, lookahead);
     const raw: QueryRow[] = [];
 
     for await (const row of operator.execute(context)) raw.push(row);
     const schema = context.catalog.get(query.collection)!;
-
+    const hasMore = query.limit != null && query.limit > 0 && raw.length > query.limit;
+    if (hasMore) raw.pop();
     const nextCursor =
-      query.limit == null || raw.length < query.limit || raw.length == 0
-        ? null
-        : encodeQueryCursor(context.generation, schema, query.orderBy ?? [], raw[raw.length - 1]!);
+      hasMore && raw.length
+        ? encodeQueryCursor(
+            context.generation,
+            schema,
+            query,
+            raw[raw.length - 1]!,
+            this.signingKey(),
+          )
+        : null;
 
     const rows = query.projection
       ? raw.map((row) => ({

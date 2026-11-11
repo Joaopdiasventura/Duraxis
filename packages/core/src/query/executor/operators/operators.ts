@@ -1,6 +1,7 @@
 import type { DocumentRecord, IndexScalar } from "../../../catalog/collection-schema.js";
 import type { QueryContext } from "../../context/query-context.js";
 import type { QueryOrder, QueryPredicate } from "../../model/query.js";
+import type { SecondaryIndexLogicalRange } from "../../../indexes/secondary/secondary-index-manager.js";
 import { compareRows, evaluatePredicate, type QueryRow } from "../predicate.js";
 
 export interface OperatorOrdering {
@@ -16,6 +17,7 @@ export interface QueryOperator {
 
 export class PrimaryLookup implements QueryOperator {
   public readonly name = "PrimaryLookup";
+  public readonly ordering: OperatorOrdering = { fields: [], deterministic: true };
 
   public constructor(
     readonly collection: string,
@@ -30,6 +32,7 @@ export class PrimaryLookup implements QueryOperator {
 
 export class UniqueIndexLookup implements QueryOperator {
   public readonly name = "UniqueIndexLookup";
+  public readonly ordering: OperatorOrdering = { fields: [], deterministic: true };
 
   public constructor(
     readonly collection: string,
@@ -44,12 +47,16 @@ export class UniqueIndexLookup implements QueryOperator {
 
 export class SecondaryIndexScan implements QueryOperator {
   public readonly name = "SecondaryIndexScan";
+  public readonly ordering?: OperatorOrdering;
 
   public constructor(
     readonly collection: string,
     readonly index: string,
     readonly direction: "ASC" | "DESC" = "ASC",
-  ) {}
+    ordering?: OperatorOrdering,
+  ) {
+    this.ordering = ordering;
+  }
 
   public execute(context: QueryContext): AsyncIterable<QueryRow> {
     return context.scanIndex(this.collection, this.index, { direction: this.direction });
@@ -58,6 +65,7 @@ export class SecondaryIndexScan implements QueryOperator {
 
 export interface SecondaryRange {
   readonly prefix?: readonly IndexScalar[];
+  readonly range?: SecondaryIndexLogicalRange;
   readonly gt?: readonly IndexScalar[];
   readonly gte?: readonly IndexScalar[];
   readonly lt?: readonly IndexScalar[];
@@ -66,13 +74,17 @@ export interface SecondaryRange {
 
 export class SecondaryIndexRangeScan implements QueryOperator {
   public readonly name = "SecondaryIndexRangeScan";
+  public readonly ordering?: OperatorOrdering;
 
   public constructor(
     readonly collection: string,
     readonly index: string,
     readonly range: SecondaryRange,
     readonly direction: "ASC" | "DESC" = "ASC",
-  ) {}
+    ordering?: OperatorOrdering,
+  ) {
+    this.ordering = ordering;
+  }
 
   public execute(context: QueryContext): AsyncIterable<QueryRow> {
     return context.scanIndex(this.collection, this.index, {
@@ -113,7 +125,7 @@ export class Filter implements QueryOperator {
 
     for await (const row of this.input.execute(context)) {
       context.assertActive();
-      if (evaluatePredicate(schema, row.document, this.predicate)) yield row;
+      if (evaluatePredicate(schema, row.document, this.predicate, row.id)) yield row;
     }
   }
 }

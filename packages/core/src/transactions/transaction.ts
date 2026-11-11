@@ -30,6 +30,8 @@ import {
 import type { QueryOperator } from "../query/executor/operators/operators.js";
 import type { LogicalQuery } from "../query/model/query.js";
 import type { QueryRow } from "../query/executor/predicate.js";
+import { RuleBasedPlanner } from "../query/planner/rule-based-planner.js";
+import { PlanCompiler } from "../query/planner/plan-compiler.js";
 
 export type TransactionState =
   "ACTIVE" | "PREPARING" | "COMMITTING" | "COMMITTED" | "ABORTED" | "UNKNOWN";
@@ -80,11 +82,14 @@ export class Transaction {
   private pendingReads = 0;
   private readonly readWaiters: Array<() => void> = [];
   private readonly queryContexts = new Set<QueryContext>();
+  private readonly planner = new RuleBasedPlanner();
+  private readonly planCompiler = new PlanCompiler();
 
   public constructor(
     private readonly storage: StorageDriver,
     snapshot: Snapshot,
     private readonly keys = new StorageKeyManager(),
+    private readonly cursorSigningKey?: Uint8Array,
   ) {
     this.capturedSnapshot = cloneSnapshot(snapshot);
     this.reader = new ManifestSnapshotReader(this.storage, this.capturedSnapshot, keys);
@@ -210,13 +215,32 @@ export class Transaction {
     return context;
   }
 
+  public query(query: LogicalQuery, options?: QueryExecutorOptions): AsyncIterable<QueryRow>;
+
   public query(
     query: LogicalQuery,
     source: QueryOperator,
     options?: QueryExecutorOptions,
+  ): AsyncIterable<QueryRow>;
+
+  public query(
+    query: LogicalQuery,
+    sourceOrOptions?: QueryOperator | QueryExecutorOptions,
+    explicitOptions?: QueryExecutorOptions,
   ): AsyncIterable<QueryRow> {
     const context = this.createQueryContext();
-    const executor = new QueryExecutor(options);
+
+    const explicit = this.isOperator(sourceOrOptions) ? sourceOrOptions : undefined;
+
+    const options: QueryExecutorOptions | undefined = explicit
+      ? explicitOptions
+      : (sourceOrOptions as QueryExecutorOptions | undefined);
+
+    const source =
+      explicit ??
+      this.planCompiler.compile(this.planner.plan(query, context.catalog), context.catalog);
+
+    const executor = new QueryExecutor(this.queryOptions(options));
 
     return (async function* () {
       try {
@@ -227,15 +251,33 @@ export class Transaction {
     })();
   }
 
-  public async queryPage(
+  public queryPage(query: LogicalQuery, options?: QueryExecutorOptions): Promise<QueryPage>;
+
+  public queryPage(
     query: LogicalQuery,
     source: QueryOperator,
     options?: QueryExecutorOptions,
+  ): Promise<QueryPage>;
+
+  public async queryPage(
+    query: LogicalQuery,
+    sourceOrOptions?: QueryOperator | QueryExecutorOptions,
+    explicitOptions?: QueryExecutorOptions,
   ): Promise<QueryPage> {
     const context = this.createQueryContext();
 
     try {
-      return await new QueryExecutor(options).page(context, query, source);
+      const explicit = this.isOperator(sourceOrOptions) ? sourceOrOptions : undefined;
+
+      const options: QueryExecutorOptions | undefined = explicit
+        ? explicitOptions
+        : (sourceOrOptions as QueryExecutorOptions | undefined);
+
+      const source =
+        explicit ??
+        this.planCompiler.compile(this.planner.plan(query, context.catalog), context.catalog);
+
+      return await new QueryExecutor(this.queryOptions(options)).page(context, query, source);
     } finally {
       context.close();
     }
@@ -344,6 +386,19 @@ export class Transaction {
   private releaseRead(): void {
     if (this.pendingReads > 0) this.pendingReads--;
     if (this.pendingReads == 0) for (const resolve of this.readWaiters.splice(0)) resolve();
+  }
+
+  private queryOptions(options?: QueryExecutorOptions): QueryExecutorOptions {
+    return {
+      ...options,
+      cursorSigningKey: options?.cursorSigningKey ?? this.cursorSigningKey,
+    };
+  }
+
+  private isOperator(
+    value: QueryOperator | QueryExecutorOptions | undefined,
+  ): value is QueryOperator {
+    return value != null && typeof (value as QueryOperator).execute == "function";
   }
 
   private collection(name: string): CollectionDefinition | undefined {

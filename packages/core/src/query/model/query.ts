@@ -21,6 +21,13 @@ export interface QueryOrder {
   readonly direction: IndexOrder;
 }
 
+export interface LogicalIndexRange {
+  readonly gt?: IndexScalar;
+  readonly gte?: IndexScalar;
+  readonly lt?: IndexScalar;
+  readonly lte?: IndexScalar;
+}
+
 export interface LogicalQuery {
   readonly collection: string;
   readonly where?: QueryPredicate;
@@ -54,6 +61,7 @@ export type AccessPath =
       readonly collection: string;
       readonly index: string;
       readonly prefix?: readonly IndexScalar[];
+      readonly range?: LogicalIndexRange;
       readonly gt?: readonly IndexScalar[];
       readonly gte?: readonly IndexScalar[];
       readonly lt?: readonly IndexScalar[];

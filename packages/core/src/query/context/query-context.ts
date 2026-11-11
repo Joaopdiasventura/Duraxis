@@ -19,6 +19,7 @@ import { BPlusTreeNodeStore } from "../../indexes/bptree/bptree-node-store.js";
 import { BPlusTreeNodeCache } from "../../indexes/bptree/bptree-node-cache.js";
 import {
   SecondaryIndexManager,
+  secondaryIndexBounds,
   type SecondaryIndexScanOptions,
 } from "../../indexes/secondary/secondary-index-manager.js";
 import { compareBytes, encodeSecondaryKey, prefixSuccessor } from "../../indexes/index-key.js";
@@ -31,6 +32,9 @@ export interface QueryMetrics {
   entriesExamined: number;
   recordsExamined: number;
   recordsReturned: number;
+  cacheHits: number;
+  cacheMisses: number;
+  durationMs: number;
 }
 
 export interface QueryContextOptions {
@@ -61,6 +65,7 @@ export class QueryContext {
   private readonly nodeCache: BPlusTreeNodeCache;
   private readonly writes: ReadonlyMap<string, PendingWrite>;
   private readonly controller = new AbortController();
+  private readonly startedAt = performance.now();
   private active = true;
   private iterators = 0;
 
@@ -71,6 +76,9 @@ export class QueryContext {
     entriesExamined: 0,
     recordsExamined: 0,
     recordsReturned: 0,
+    cacheHits: 0,
+    cacheMisses: 0,
+    durationMs: 0,
   };
   public readonly catalog: ReadonlyMap<string, CollectionDefinition>;
 
@@ -100,6 +108,10 @@ export class QueryContext {
   public close(reason: unknown = new Error("Query context is closed")): void {
     if (!this.active) return;
     this.active = false;
+    const cache = this.nodeCache.getMetrics();
+    this.metrics.cacheHits = cache.hits;
+    this.metrics.cacheMisses = cache.misses;
+    this.metrics.durationMs = performance.now() - this.startedAt;
     this.controller.abort(reason);
     this.nodeCache.clear();
     this.options.onClose?.();
@@ -242,29 +254,12 @@ export class QueryContext {
     if (!index) throw new Error(`Unknown index: ${collection}/${indexName}`);
     const parts = indexFields(index);
     const orders = parts.map((part) => part.order);
-    const encode = (values: readonly IndexScalar[]) =>
-      encodeSecondaryKey(values, undefined, orders.slice(0, values.length));
-    const eq =
-      options.eq == null
-        ? undefined
-        : Array.isArray(options.eq)
-          ? options.eq
-          : [options.eq as IndexScalar];
-    const prefixValues = eq ?? options.prefix;
-    const prefix = prefixValues ? encode(prefixValues) : undefined;
-    const prefixEnd = prefix ? prefixSuccessor(prefix) : undefined;
-    const gtEnd = options.gt ? prefixSuccessor(encode(options.gt)) : undefined;
-    const lteEnd = options.lte ? prefixSuccessor(encode(options.lte)) : undefined;
+    const bounds = secondaryIndexBounds(index, options);
     const matches = (key: Uint8Array) =>
-      (!prefix ||
-        (compareBytes(key, prefix) >= 0 &&
-          (prefixEnd == null || compareBytes(key, prefixEnd) < 0))) &&
-      (!options.gte || compareBytes(key, encode(options.gte)) >= 0) &&
-      (!options.gt ||
-        (gtEnd ? compareBytes(key, gtEnd) >= 0 : compareBytes(key, encode(options.gt)) > 0)) &&
-      (!options.lt || compareBytes(key, encode(options.lt)) < 0) &&
-      (!options.lte ||
-        (lteEnd ? compareBytes(key, lteEnd) < 0 : compareBytes(key, encode(options.lte)) <= 0));
+      (bounds.gt == null || compareBytes(key, bounds.gt) > 0) &&
+      (bounds.gte == null || compareBytes(key, bounds.gte) >= 0) &&
+      (bounds.lt == null || compareBytes(key, bounds.lt) < 0) &&
+      (bounds.lte == null || compareBytes(key, bounds.lte) <= 0);
     const result: Array<{ key: Uint8Array; row: QueryRow }> = [];
     for (const [id, write] of this.pendingFor(collection)) {
       if (write.type != "put") continue;
