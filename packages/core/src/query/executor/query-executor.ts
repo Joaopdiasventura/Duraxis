@@ -93,6 +93,7 @@ export interface QueryExecutorOptions {
   readonly maxSortRowsInMemory?: number;
   readonly sortSpill?: SortSpillStore;
   readonly cursorSigningKey?: Uint8Array;
+  readonly signal?: AbortSignal;
 }
 
 export class QueryExecutor {

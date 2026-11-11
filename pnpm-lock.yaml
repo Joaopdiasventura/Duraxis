@@ -195,6 +195,22 @@ importers:
         specifier: workspace:*
         version: link:../storage-memory
 
+  packages/orm:
+    dependencies:
+      '@duraxis/core':
+        specifier: workspace:*
+        version: link:../core
+    devDependencies:
+      '@duraxis/storage':
+        specifier: workspace:*
+        version: link:../storage
+      '@duraxis/storage-disk':
+        specifier: workspace:*
+        version: link:../storage-disk
+      '@duraxis/storage-memory':
+        specifier: workspace:*
+        version: link:../storage-memory
+
   packages/storage: {}
 
   packages/storage-disk:

@@ -47,6 +47,7 @@ import { CommitOutcomeUnknownError } from "../errors/commit-outcome-unknown.erro
 
 import {
   RECORD_PREFIX,
+  normalizeCollection,
   recordKey,
   decodeDocument,
   parseRecordKey,
@@ -78,6 +79,36 @@ export interface DuraxisMetrics {
   readonly garbageCollections: number;
   readonly garbageCollectionDurationMs: number;
   readonly storage?: ReturnType<NonNullable<StorageDriver["getMetrics"]>>;
+}
+
+function immutableCollection(definition: CollectionDefinition): CollectionDefinition {
+  const normalized = normalizeCollection(definition);
+
+  const fields = normalized.fields
+    ? Object.freeze(
+        Object.fromEntries(
+          Object.entries(normalized.fields).map(([name, field]) => [
+            name,
+            Object.freeze({ ...field }),
+          ]),
+        ),
+      )
+    : undefined;
+
+  const indexes = Object.freeze(
+    normalized.indexes.map((index) =>
+      Object.freeze({
+        ...index,
+        fields: Object.freeze((index.fields ?? []).map((field) => Object.freeze({ ...field }))),
+      }),
+    ),
+  );
+
+  return Object.freeze({
+    ...normalized,
+    ...(fields == null ? {} : { fields }),
+    indexes,
+  });
 }
 
 export class DuraxisDatabase {
@@ -164,6 +195,20 @@ export class DuraxisDatabase {
     });
   }
 
+  public async getCollectionDefinitions(): Promise<readonly CollectionDefinition[]> {
+    const snapshot = await this.acquireSnapshot();
+
+    try {
+      return Object.freeze(
+        [...snapshot.manifest.catalog.values()]
+          .map((definition) => immutableCollection(definition))
+          .sort((left, right) => left.name.localeCompare(right.name)),
+      );
+    } finally {
+      this.active.delete(snapshot);
+    }
+  }
+
   public async addIndex(collection: string, index: SecondaryIndexDefinition): Promise<void> {
     await this.transaction((tx) => {
       tx.addIndex(collection, index);
@@ -192,12 +237,16 @@ export class DuraxisDatabase {
       database.metrics.queries++;
       const snapshot = await database.acquireSnapshot();
       const context = new QueryContext(database.storage, snapshot, database.keys);
+      let unbindSignal = () => {};
 
       try {
         const explicit = database.isOperator(sourceOrOptions) ? sourceOrOptions : undefined;
         const options: QueryExecutorOptions | undefined = explicit
           ? explicitOptions
           : (sourceOrOptions as QueryExecutorOptions | undefined);
+
+        unbindSignal = database.bindSignal(context, options?.signal);
+
         const source =
           explicit ??
           database.planCompiler.compile(
@@ -206,6 +255,7 @@ export class DuraxisDatabase {
           );
         yield* new QueryExecutor(database.queryOptions(options)).execute(context, query, source);
       } finally {
+        unbindSignal();
         database.metrics.queryDurationMs += performance.now() - started;
         context.close();
         database.active.delete(snapshot);
@@ -228,17 +278,22 @@ export class DuraxisDatabase {
     this.metrics.queries++;
     const snapshot = await this.acquireSnapshot();
     const context = new QueryContext(this.storage, snapshot, this.keys);
+    let unbindSignal = () => {};
 
     try {
       const explicit = this.isOperator(sourceOrOptions) ? sourceOrOptions : undefined;
       const options: QueryExecutorOptions | undefined = explicit
         ? explicitOptions
         : (sourceOrOptions as QueryExecutorOptions | undefined);
+
+      unbindSignal = this.bindSignal(context, options?.signal);
+
       const source =
         explicit ??
         this.planCompiler.compile(this.planner.plan(query, context.catalog), context.catalog);
       return await new QueryExecutor(this.queryOptions(options)).page(context, query, source);
     } finally {
+      unbindSignal();
       this.metrics.queryDurationMs += performance.now() - started;
       context.close();
       this.active.delete(snapshot);
@@ -279,10 +334,14 @@ export class DuraxisDatabase {
     return (async function* () {
       const snapshot = await database.acquireSnapshot();
       const context = new QueryContext(database.storage, snapshot, database.keys);
+
+      const unbindSignal = database.bindSignal(context, options?.signal);
+
       try {
         const source = database.planCompiler.compile(plan, context.catalog);
         yield* new QueryExecutor(database.queryOptions(options)).execute(context, query, source);
       } finally {
+        unbindSignal();
         context.close();
         database.active.delete(snapshot);
       }
@@ -500,6 +559,17 @@ export class DuraxisDatabase {
       ...options,
       cursorSigningKey: options?.cursorSigningKey ?? this.cursorSigningKey,
     };
+  }
+
+  private bindSignal(context: QueryContext, signal?: AbortSignal): () => void {
+    if (!signal) return () => {};
+
+    const cancel = () => context.cancel(signal.reason ?? new Error("Query cancelled"));
+
+    if (signal.aborted) cancel();
+    else signal.addEventListener("abort", cancel, { once: true });
+
+    return () => signal.removeEventListener("abort", cancel);
   }
 
   private isOperator(

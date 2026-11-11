@@ -22,6 +22,27 @@ function createDatabase() {
 }
 
 describe("DuraxisDatabase", () => {
+  it("exposes immutable normalized collection catalog snapshots", async () => {
+    const { db } = createDatabase();
+    await db.defineCollection({
+      name: "catalog_test",
+      fields: { value: { type: "string" } },
+      indexes: [{ name: "value", unique: false, field: "value" }],
+    });
+    const catalog = await db.getCollectionDefinitions();
+    expect(catalog).toEqual([
+      {
+        name: "catalog_test",
+        fields: { value: { type: "string", required: false, nullable: false } },
+        allowAdditionalFields: true,
+        indexes: [{ name: "value", unique: false, fields: [{ field: "value", order: "ASC" }] }],
+      },
+    ]);
+    expect(Object.isFrozen(catalog)).toBe(true);
+    expect(Object.isFrozen(catalog[0]?.fields)).toBe(true);
+    expect(Object.isFrozen(catalog[0]?.indexes[0]?.fields)).toBe(true);
+  });
+
   it("commits multiple objects together", async () => {
     const { db } = createDatabase();
 

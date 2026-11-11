@@ -241,11 +241,14 @@ export class Transaction {
       this.planCompiler.compile(this.planner.plan(query, context.catalog), context.catalog);
 
     const executor = new QueryExecutor(this.queryOptions(options));
+    const transaction = this;
 
     return (async function* () {
+      const unbindSignal = transaction.bindSignal(context, options?.signal);
       try {
         yield* executor.execute(context, query, source);
       } finally {
+        unbindSignal();
         context.close();
       }
     })();
@@ -265,6 +268,7 @@ export class Transaction {
     explicitOptions?: QueryExecutorOptions,
   ): Promise<QueryPage> {
     const context = this.createQueryContext();
+    let unbindSignal = () => {};
 
     try {
       const explicit = this.isOperator(sourceOrOptions) ? sourceOrOptions : undefined;
@@ -272,6 +276,7 @@ export class Transaction {
       const options: QueryExecutorOptions | undefined = explicit
         ? explicitOptions
         : (sourceOrOptions as QueryExecutorOptions | undefined);
+      unbindSignal = this.bindSignal(context, options?.signal);
 
       const source =
         explicit ??
@@ -279,6 +284,7 @@ export class Transaction {
 
       return await new QueryExecutor(this.queryOptions(options)).page(context, query, source);
     } finally {
+      unbindSignal();
       context.close();
     }
   }
@@ -393,6 +399,14 @@ export class Transaction {
       ...options,
       cursorSigningKey: options?.cursorSigningKey ?? this.cursorSigningKey,
     };
+  }
+
+  private bindSignal(context: QueryContext, signal?: AbortSignal): () => void {
+    if (!signal) return () => {};
+    const cancel = () => context.cancel(signal.reason ?? new Error("Query cancelled"));
+    if (signal.aborted) cancel();
+    else signal.addEventListener("abort", cancel, { once: true });
+    return () => signal.removeEventListener("abort", cancel);
   }
 
   private isOperator(
