@@ -29,6 +29,7 @@ import {
   getDuraxisOrmToken,
   getDuraxisRepositoryToken,
 } from "../index.js";
+import { DuraxisConnectionRegistry } from "../duraxis.registry.js";
 
 @Entity("nest_users")
 class User {
@@ -106,6 +107,145 @@ async function compileDefault(
 }
 
 describe("DuraxisModule root and feature providers", () => {
+  it("autoloads entities declared only by forFeature", async () => {
+    const testingModule = await Test.createTestingModule({
+      imports: [
+        DuraxisModule.forRoot({
+          driver: new MemoryStorageDriver(),
+          autoLoadEntities: true,
+          schema: { mode: "create" },
+        }),
+        DuraxisModule.forFeature([User]),
+      ],
+    }).compile();
+    try {
+      const users = testingModule.get<Repository<User>>(getDuraxisRepositoryToken(User));
+      await users.insert({ id: "autoload", email: "autoload@example.com" });
+      expect((await users.findById("autoload"))?.email).toBe("autoload@example.com");
+    } finally {
+      await testingModule.close();
+    }
+  });
+
+  it("combines explicit and auto-loaded entities without duplicating class identities", async () => {
+    const testingModule = await Test.createTestingModule({
+      imports: [
+        DuraxisModule.forRoot({
+          driver: new MemoryStorageDriver(),
+          entities: [User],
+          autoLoadEntities: true,
+          schema: { mode: "create" },
+        }),
+        DuraxisModule.forFeature([User, User]),
+        DuraxisModule.forFeature([Product]),
+      ],
+    }).compile();
+    try {
+      expect(testingModule.get(getDuraxisRepositoryToken(User))).toBeDefined();
+      expect(testingModule.get(getDuraxisRepositoryToken(Product))).toBeDefined();
+    } finally {
+      await testingModule.close();
+    }
+  });
+
+  it("auto-loads distinct entity classes that share the same JavaScript class name", async () => {
+    const makeEntity = (collection: string): EntityClass<{ id: string }> => {
+      @Entity(collection)
+      class Collision {
+        @PrimaryKey()
+        id!: string;
+      }
+      return Collision;
+    };
+    const first = makeEntity("autoload_collision_one");
+    const second = makeEntity("autoload_collision_two");
+    const testingModule = await Test.createTestingModule({
+      imports: [
+        DuraxisModule.forRoot({
+          driver: new MemoryStorageDriver(),
+          autoLoadEntities: true,
+          schema: { mode: "create" },
+        }),
+        DuraxisModule.forFeature([first, second]),
+      ],
+    }).compile();
+    try {
+      expect(first.name).toBe(second.name);
+      expect(testingModule.get(getDuraxisRepositoryToken(first))).toBeDefined();
+      expect(testingModule.get(getDuraxisRepositoryToken(second))).toBeDefined();
+    } finally {
+      await testingModule.close();
+    }
+  });
+
+  it("auto-loads asynchronous named connections without cross-connection contamination", async () => {
+    const testingModule = await Test.createTestingModule({
+      imports: [
+        DuraxisModule.forFeature([User], "primary-auto"),
+        DuraxisModule.forRootAsync({
+          name: "primary-auto",
+          useFactory: async () => ({
+            driver: new MemoryStorageDriver(),
+            autoLoadEntities: true,
+            schema: { mode: "create" },
+          }),
+        }),
+        DuraxisModule.forRoot({
+          name: "secondary-auto",
+          driver: new MemoryStorageDriver(),
+          autoLoadEntities: true,
+          schema: { mode: "create" },
+        }),
+        DuraxisModule.forFeature([Product], "secondary-auto"),
+      ],
+    }).compile();
+    try {
+      const primary = testingModule.get<DuraxisORM>(getDuraxisOrmToken("primary-auto"));
+      const secondary = testingModule.get<DuraxisORM>(getDuraxisOrmToken("secondary-auto"));
+      expect(primary.getRepository(User)).toBeDefined();
+      expect(() => primary.getRepository(Product)).toThrow(EntityNotRegisteredError);
+      expect(secondary.getRepository(Product)).toBeDefined();
+      expect(() => secondary.getRepository(User)).toThrow(EntityNotRegisteredError);
+    } finally {
+      await testingModule.close();
+    }
+  });
+
+  it("isolates entity discovery across applications compiled concurrently", async () => {
+    const [usersApplication, productsApplication] = await Promise.all([
+      Test.createTestingModule({
+        imports: [
+          DuraxisModule.forRoot({
+            driver: new MemoryStorageDriver(),
+            autoLoadEntities: true,
+            schema: { mode: "create" },
+          }),
+          DuraxisModule.forFeature([User]),
+        ],
+      }).compile(),
+      Test.createTestingModule({
+        imports: [
+          DuraxisModule.forRoot({
+            driver: new MemoryStorageDriver(),
+            autoLoadEntities: true,
+            schema: { mode: "create" },
+          }),
+          DuraxisModule.forFeature([Product]),
+        ],
+      }).compile(),
+    ]);
+    try {
+      expect(() =>
+        usersApplication.get<DuraxisORM>(getDuraxisOrmToken()).getRepository(Product),
+      ).toThrow(EntityNotRegisteredError);
+      expect(() =>
+        productsApplication.get<DuraxisORM>(getDuraxisOrmToken()).getRepository(User),
+      ).toThrow(EntityNotRegisteredError);
+    } finally {
+      await Promise.all([usersApplication.close(), productsApplication.close()]);
+    }
+  });
+
   it("initializes forRoot with a memory driver and injects typed services", async () => {
     const testingModule = await compileDefault();
     try {
@@ -398,7 +538,36 @@ describe("tokens and named connections", () => {
         ],
       }).compile(),
     ).rejects.toBeInstanceOf(DuplicateDuraxisConnectionError);
-    expect(firstStorage.closeCalls + secondStorage.closeCalls).toBe(1);
+    expect(firstStorage.closeCalls + secondStorage.closeCalls).toBe(0);
+  });
+
+  it("does not close the valid registered connection when a duplicate is rejected", async () => {
+    const registry = new DuraxisConnectionRegistry();
+    const validStorage = new TrackingMemoryStorage();
+    const rejectedStorage = new TrackingMemoryStorage();
+    const connection = await registry.create("registry-duplicate", {
+      driver: () => validStorage,
+      entities: [User],
+      schema: { mode: "create" },
+    });
+    try {
+      await expect(
+        registry.create("registry-duplicate", {
+          driver: () => rejectedStorage,
+          entities: [User],
+          schema: { mode: "create" },
+        }),
+      ).rejects.toBeInstanceOf(DuplicateDuraxisConnectionError);
+      await connection.orm.getRepository(User).insert({ id: "still-valid", email: "valid@test" });
+      expect((await connection.orm.getRepository(User).findById("still-valid"))?.id).toBe(
+        "still-valid",
+      );
+      expect(validStorage.closeCalls).toBe(0);
+      expect(rejectedStorage.closeCalls).toBe(0);
+    } finally {
+      await connection.close();
+    }
+    expect(validStorage.closeCalls).toBe(1);
   });
 });
 

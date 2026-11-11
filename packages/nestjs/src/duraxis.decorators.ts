@@ -4,6 +4,7 @@ import {
   getDuraxisDatabaseToken,
   getDuraxisOrmToken,
   getDuraxisRepositoryToken,
+  getDuraxisTransactionManagerToken,
 } from "./duraxis.tokens.js";
 
 export function InjectDuraxisRepository<TEntity extends object>(
@@ -21,4 +22,10 @@ export function InjectDuraxisDatabase(
   connectionName?: string,
 ): ParameterDecorator & PropertyDecorator {
   return Inject(getDuraxisDatabaseToken(connectionName));
+}
+
+export function InjectDuraxisTransactionManager(
+  connectionName?: string,
+): ParameterDecorator & PropertyDecorator {
+  return Inject(getDuraxisTransactionManagerToken(connectionName));
 }

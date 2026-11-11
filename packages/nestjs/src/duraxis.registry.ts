@@ -2,6 +2,8 @@ import { Global, Injectable, Module } from "@nestjs/common";
 import { DuraxisNestConnection } from "./duraxis.connection.js";
 import { DuplicateDuraxisConnectionError } from "./duraxis.errors.js";
 import type { DuraxisModuleOptions } from "./duraxis.interfaces.js";
+import { TransactionContextManager } from "./transactions/transaction-context.manager.js";
+import { TransactionManagerRegistry } from "./transactions/transaction-manager.registry.js";
 
 @Injectable()
 export class DuraxisConnectionRegistry {
@@ -9,19 +11,7 @@ export class DuraxisConnectionRegistry {
 
   public async create(name: string, options: DuraxisModuleOptions): Promise<DuraxisNestConnection> {
     const existing = this.#active.get(name);
-    if (existing) {
-      const duplicate = new DuplicateDuraxisConnectionError(name);
-      try {
-        const connection = await existing;
-        await connection.close();
-      } catch (cleanupCause) {
-        throw new AggregateError(
-          [duplicate, cleanupCause],
-          `Duplicate Duraxis connection ${name} could not be cleaned up`,
-        );
-      }
-      throw duplicate;
-    }
+    if (existing) throw new DuplicateDuraxisConnectionError(name);
 
     let creation!: Promise<DuraxisNestConnection>;
     creation = DuraxisNestConnection.create(name, options, () => {
@@ -39,7 +29,7 @@ export class DuraxisConnectionRegistry {
 
 @Global()
 @Module({
-  providers: [DuraxisConnectionRegistry],
-  exports: [DuraxisConnectionRegistry],
+  providers: [DuraxisConnectionRegistry, TransactionContextManager, TransactionManagerRegistry],
+  exports: [DuraxisConnectionRegistry, TransactionContextManager, TransactionManagerRegistry],
 })
 export class DuraxisConnectionRegistryModule {}

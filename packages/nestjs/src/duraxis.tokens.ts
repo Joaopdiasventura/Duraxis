@@ -31,6 +31,10 @@ export function getDuraxisDatabaseToken(connectionName?: string): symbol {
   return connectionToken("database", connectionName);
 }
 
+export function getDuraxisTransactionManagerToken(connectionName?: string): symbol {
+  return connectionToken("transaction-manager", connectionName);
+}
+
 export function getDuraxisRepositoryToken<TEntity extends object>(
   entity: EntityClass<TEntity>,
   connectionName?: string,

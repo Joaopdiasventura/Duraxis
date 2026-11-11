@@ -7,7 +7,8 @@ export type DuraxisDriverFactory = () => StorageDriver | Promise<StorageDriver>;
 
 export interface DuraxisModuleOptions {
   readonly driver: StorageDriver | DuraxisDriverFactory;
-  readonly entities: readonly EntityClass[];
+  readonly entities?: readonly EntityClass[];
+  readonly autoLoadEntities?: boolean;
   readonly database?: Omit<DuraxisDatabaseOptions, "storage">;
   readonly schema?: DuraxisOrmOptions["schema"];
   /**

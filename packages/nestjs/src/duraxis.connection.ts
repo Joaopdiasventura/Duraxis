@@ -13,6 +13,7 @@ function isStorageDriver(value: unknown): value is StorageDriver {
 
 export class DuraxisNestConnection implements OnModuleDestroy, OnApplicationShutdown {
   #closing?: Promise<void>;
+  #beforeClose?: () => Promise<void>;
 
   private constructor(
     public readonly name: string,
@@ -43,7 +44,7 @@ export class DuraxisNestConnection implements OnModuleDestroy, OnApplicationShut
       });
       orm = new DuraxisORM({
         database,
-        entities: options.entities,
+        entities: options.entities ?? [],
         ...(options.schema == null ? {} : { schema: options.schema }),
         closeDatabase: true,
         closeStorage,
@@ -70,9 +71,29 @@ export class DuraxisNestConnection implements OnModuleDestroy, OnApplicationShut
     await this.#closing;
   }
 
+  public setBeforeClose(callback: () => Promise<void>): void {
+    if (this.#beforeClose)
+      throw new Error(`Duraxis connection ${this.name} already has a close coordinator`);
+    this.#beforeClose = callback;
+  }
+
   private async closeResources(): Promise<void> {
-    await this.orm.close();
-    this.onClosed();
+    const failures: unknown[] = [];
+    try {
+      await this.#beforeClose?.();
+    } catch (error) {
+      failures.push(error);
+    }
+    try {
+      await this.orm.close();
+    } catch (error) {
+      failures.push(error);
+    } finally {
+      this.onClosed();
+    }
+    if (failures.length == 1) throw failures[0];
+    if (failures.length > 1)
+      throw new AggregateError(failures, `Duraxis connection ${this.name} shutdown failed`);
   }
 
   public async onModuleDestroy(): Promise<void> {
