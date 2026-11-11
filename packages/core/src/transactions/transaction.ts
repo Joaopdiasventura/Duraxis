@@ -157,7 +157,7 @@ export class Transaction {
     const current = this.requireCollection(collection);
 
     const updated: CollectionDefinition = {
-      name: collection,
+      ...current,
       indexes: [...current.indexes, index],
     };
 
