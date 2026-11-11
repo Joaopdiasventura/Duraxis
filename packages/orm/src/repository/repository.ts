@@ -177,7 +177,7 @@ export class Repository<TEntity extends object> {
 
   public createQueryBuilder(): QueryBuilder<TEntity> {
     this.runtime.assertUsable();
-    
+
     return new QueryBuilder(
       this.#queryMapper,
       {

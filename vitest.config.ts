@@ -8,6 +8,7 @@ export default defineConfig({
       "./packages/storage-disk/vitest.config.ts",
       "./packages/core/vitest.config.ts",
       "./packages/orm/vitest.config.ts",
+      "./packages/nestjs/vitest.config.ts",
     ],
 
     coverage: {

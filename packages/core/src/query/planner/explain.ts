@@ -17,7 +17,7 @@ export function explainPhysicalPlan(plan: PhysicalPlan): ExplainResult {
   if (plan.requiresSort) operators.push("sort");
   if (plan.limit != null) operators.push("limit");
   if (plan.projection) operators.push("projection");
-  
+
   return {
     plan,
     selectedIndexes: [...indexes].sort(),

@@ -53,7 +53,7 @@ export class ValueTransformer {
         ? this.invalid(column, "canonical date string")
         : date;
     }
-    
+
     return this.toDocument(column, value);
   }
 

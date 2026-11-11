@@ -26,7 +26,7 @@ export class MetadataRegistry {
 
     this.#metadata.set(entity, metadata);
     this.#collections.set(metadata.collection, entity);
-    
+
     return metadata;
   }
 

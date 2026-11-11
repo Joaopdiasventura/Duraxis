@@ -130,7 +130,7 @@ export class QueryBuilder<TEntity extends object> {
 
   public async getCount(): Promise<number> {
     const query = this.toLogicalQuery();
-    
+
     return this.executor.count(
       {
         collection: query.collection,

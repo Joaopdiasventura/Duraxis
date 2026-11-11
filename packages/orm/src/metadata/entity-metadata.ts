@@ -70,7 +70,7 @@ export class EntityMetadata<TEntity extends object = object> {
 
     this.#byProperty = new Map(this.columns.map((column) => [column.property, column]));
     this.#byField = new Map(this.columns.map((column) => [column.field, column]));
-    
+
     Object.freeze(this);
   }
 

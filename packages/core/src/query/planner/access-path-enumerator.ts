@@ -176,7 +176,7 @@ export class AccessPathEnumerator {
         });
       }
     }
-    
+
     return candidates;
   }
 }
