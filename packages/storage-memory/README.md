@@ -30,3 +30,5 @@ condicionais, listagem e métricas. Ela pode ser passada diretamente a `DuraxisD
 
 Não há persistência entre processos nem coordenação distribuída. Requer Node.js 22.12+ e é
 distribuído em ESM, CommonJS e TypeScript.
+
+Release automation verification.
