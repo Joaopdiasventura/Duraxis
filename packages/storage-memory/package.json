@@ -1,6 +1,6 @@
 {
   "name": "@duraxis/storage-memory",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "In-memory StorageDriver implementation for Duraxis development and tests.",
   "license": "ISC",
   "author": "João Paulo Dias <joaopdias.dev@gmail.com>",
