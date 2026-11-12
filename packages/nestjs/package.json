@@ -1,6 +1,32 @@
 {
   "name": "@duraxis/nestjs",
   "version": "0.1.0",
+  "description": "NestJS modules, injection tokens, repositories, and transactions for Duraxis.",
+  "license": "ISC",
+  "author": "João Paulo Dias <joaopdias.dev@gmail.com>",
+  "keywords": [
+    "duraxis",
+    "nestjs",
+    "database",
+    "orm",
+    "typescript"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Joaopdiasventura/Duraxis.git",
+    "directory": "packages/nestjs"
+  },
+  "homepage": "https://github.com/Joaopdiasventura/Duraxis/tree/main/packages/nestjs#readme",
+  "bugs": {
+    "url": "https://github.com/Joaopdiasventura/Duraxis/issues"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
@@ -14,7 +40,9 @@
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
   ],
   "scripts": {
     "build": "vite build && tsc -p tsconfig.build.json",

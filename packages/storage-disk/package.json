@@ -1,6 +1,32 @@
 {
   "name": "@duraxis/storage-disk",
   "version": "0.1.0",
+  "description": "Asynchronous filesystem StorageDriver implementation for Duraxis.",
+  "license": "ISC",
+  "author": "João Paulo Dias <joaopdias.dev@gmail.com>",
+  "keywords": [
+    "duraxis",
+    "database",
+    "storage",
+    "filesystem",
+    "typescript"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Joaopdiasventura/Duraxis.git",
+    "directory": "packages/storage-disk"
+  },
+  "homepage": "https://github.com/Joaopdiasventura/Duraxis/tree/main/packages/storage-disk#readme",
+  "bugs": {
+    "url": "https://github.com/Joaopdiasventura/Duraxis/issues"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
@@ -14,8 +40,11 @@
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
   ],
+  "sideEffects": false,
   "scripts": {
     "build": "vite build && tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",

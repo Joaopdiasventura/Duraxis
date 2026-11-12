@@ -7,5 +7,6 @@
     "rootDir": "./src",
     "noEmit": false
   },
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*.ts"],
+  "exclude": ["node_modules", "dist", "src/**/*.spec.ts", "src/**/*.test.ts"]
 }
