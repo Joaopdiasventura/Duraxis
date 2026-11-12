@@ -11,7 +11,8 @@
   },
   "scripts": {
     "build": "pnpm -r --if-present build",
-    "typecheck": "pnpm -r --if-present typecheck",
+    "typecheck": "pnpm build && pnpm -r --if-present typecheck",
+    "typecheck:only": "pnpm -r --if-present typecheck",
     "test": "pnpm build && vitest run",
     "test:run": "vitest run",
     "test:watch": "pnpm build && vitest",
@@ -29,7 +30,7 @@
     "validate:artifacts": "node scripts/validate-packages.mjs artifacts",
     "pack:check": "pnpm build && node scripts/validate-packages.mjs pack",
     "pack:check:built": "node scripts/validate-packages.mjs pack",
-    "validate:release": "pnpm format:check && pnpm typecheck && pnpm build && pnpm test:run && pnpm pack:check:built"
+    "validate:release": "pnpm format:check && pnpm build && pnpm typecheck && pnpm test:run && pnpm pack:check:built"
   },
   "devEngines": {
     "packageManager": {

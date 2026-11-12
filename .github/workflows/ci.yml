@@ -41,11 +41,11 @@ jobs:
       - name: Check formatting
         run: pnpm format:check
 
-      - name: Typecheck
-        run: pnpm typecheck
-
       - name: Build ESM, CommonJS, and declarations
         run: pnpm build
+
+      - name: Typecheck
+        run: pnpm typecheck
 
       - name: Run automated tests
         run: pnpm test:run
