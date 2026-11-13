@@ -4,5 +4,6 @@ export type {
   DiskDurabilityCapabilities,
   DiskFaultPoint,
   DiskFaultContext,
+  OwnershipRecoveryOptions,
   RecoverOwnershipOptions,
 } from "./async-disk-storage.driver.js";

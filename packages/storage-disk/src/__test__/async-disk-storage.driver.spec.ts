@@ -1,7 +1,7 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
@@ -80,6 +80,76 @@ async function child(
   });
 }
 
+function interactiveChild(
+  script: string,
+  args: readonly string[],
+): {
+  readonly process: ChildProcessWithoutNullStreams;
+  readonly firstLine: Promise<string>;
+  readonly exit: Promise<{ code: number | null; stderr: string }>;
+} {
+  const childProcess = spawn(process.execPath, ["--input-type=module", "--eval", script, ...args], {
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  let stdout = "";
+  let stderr = "";
+  childProcess.stdout.setEncoding("utf8");
+  childProcess.stderr.setEncoding("utf8");
+  childProcess.stderr.on("data", (chunk) => {
+    stderr += String(chunk);
+  });
+  const firstLine = new Promise<string>((resolveLine, reject) => {
+    const onData = (chunk: string) => {
+      stdout += chunk;
+      const newline = stdout.indexOf("\n");
+      if (newline < 0) return;
+      childProcess.stdout.off("data", onData);
+      resolveLine(stdout.slice(0, newline));
+    };
+    childProcess.stdout.on("data", onData);
+    childProcess.on("error", reject);
+    childProcess.on("exit", () => {
+      if (!stdout.includes("\n"))
+        reject(new Error(`Child exited before reporting ownership: ${stderr}`));
+    });
+  });
+  const exit = new Promise<{ code: number | null; stderr: string }>((resolveExit, reject) => {
+    childProcess.on("error", reject);
+    childProcess.on("exit", (code) => resolveExit({ code, stderr }));
+  });
+  return { process: childProcess, firstLine, exit };
+}
+
+function ownerLock(
+  overrides: Partial<{
+    ownerId: string;
+    pid: number;
+    hostname: string;
+    createdAt: number;
+    applicationId: string | null;
+    processIdentity: string;
+  }> = {},
+): string {
+  const payload = {
+    format: 2 as const,
+    ownerId: overrides.ownerId ?? randomUUID(),
+    pid: overrides.pid ?? 2_147_483_647,
+    hostname: overrides.hostname ?? hostname(),
+    createdAt: overrides.createdAt ?? Date.now(),
+    applicationId: overrides.applicationId ?? "duraxis-tests",
+    processIdentity: overrides.processIdentity ?? "linux:pid:[invalid]",
+  };
+  return JSON.stringify({
+    ...payload,
+    checksum: createHash("sha256").update(JSON.stringify(payload)).digest("hex"),
+  });
+}
+
+async function linuxProcessIdentity(): Promise<string> {
+  const { readlink } = await import("node:fs/promises");
+  return `linux:${await readlink("/proc/self/ns/pid")}`;
+}
+
 function builtModuleUrl(): string {
   return pathToFileURL(resolve(import.meta.dirname, "../../dist/index.js")).href;
 }
@@ -145,6 +215,251 @@ describe("AsyncDiskStorageDriver persistence", () => {
     await reopened.close();
   });
 
+  it("validates ownership recovery application identifiers", async () => {
+    const path = await directory();
+    await expect(
+      AsyncDiskStorageDriver.open({
+        directory: path,
+        ownershipRecovery: { mode: "manual", applicationId: "invalid application id" },
+      }),
+    ).rejects.toBeInstanceOf(TypeError);
+  });
+
+  it.skipIf(process.platform == "linux")(
+    "fails closed when dead-process recovery is unsupported",
+    async () => {
+      const path = await directory();
+      await expect(
+        AsyncDiskStorageDriver.open({
+          directory: path,
+          ownershipRecovery: { mode: "dead-process", applicationId: "duraxis-tests" },
+        }),
+      ).rejects.toMatchObject({ code: "OWNERSHIP_CONFLICT" });
+    },
+  );
+
+  it.skipIf(process.platform != "linux")(
+    "automatically recovers a terminated owner and preserves database integrity",
+    async () => {
+      const path = await directory();
+      const script = `
+        const { AsyncDiskStorageDriver } = await import(${JSON.stringify(builtModuleUrl())});
+        const { DuraxisDatabase } = await import(${JSON.stringify(coreBuiltModuleUrl())});
+        const storage = await AsyncDiskStorageDriver.open({
+          directory: process.argv[1],
+          ownershipRecovery: { mode: "dead-process", applicationId: "duraxis-tests" },
+        });
+        const database = new DuraxisDatabase({ storage });
+        await database.defineCollection({
+          name: "automatic_recovery",
+          fields: { value: { type: "string", required: true } },
+          indexes: [],
+        });
+        await database.transaction((transaction) => {
+          transaction.putDocument("automatic_recovery", "1", { value: "persisted" });
+        });
+        process.kill(process.pid, "SIGKILL");
+      `;
+      expect((await child(script, [path])).code).not.toBe(0);
+
+      const storage = await AsyncDiskStorageDriver.open({
+        directory: path,
+        ownershipRecovery: { mode: "dead-process", applicationId: "duraxis-tests" },
+      });
+      const database = new DuraxisDatabase({ storage });
+      expect((await database.getDocument("automatic_recovery", "1"))?.value).toBe("persisted");
+      await expect(database.verifyIntegrity()).resolves.toBeDefined();
+      await storage.close();
+    },
+  );
+
+  it.skipIf(process.platform != "linux")(
+    "never displaces a live owner with the same application identity",
+    async () => {
+      const path = await directory();
+      const first = await AsyncDiskStorageDriver.open({
+        directory: path,
+        ownershipRecovery: { mode: "dead-process", applicationId: "duraxis-tests" },
+      });
+      const script = `
+        const { AsyncDiskStorageDriver } = await import(${JSON.stringify(builtModuleUrl())});
+        try {
+          await AsyncDiskStorageDriver.open({
+            directory: process.argv[1],
+            ownershipRecovery: { mode: "dead-process", applicationId: "duraxis-tests" },
+          });
+          process.exit(2);
+        } catch (error) {
+          process.exit(error?.code === "OWNERSHIP_CONFLICT" ? 0 : 3);
+        }
+      `;
+      expect((await child(script, [path])).code).toBe(0);
+      await first.close();
+    },
+  );
+
+  it.skipIf(process.platform != "linux")(
+    "rejects a dead lock from a different application identity",
+    async () => {
+      const path = await directory();
+      const script = `
+        const { AsyncDiskStorageDriver } = await import(${JSON.stringify(builtModuleUrl())});
+        await AsyncDiskStorageDriver.open({
+          directory: process.argv[1],
+          ownershipRecovery: { mode: "dead-process", applicationId: "application-a" },
+        });
+        process.kill(process.pid, "SIGKILL");
+      `;
+      await child(script, [path]);
+      await expect(
+        AsyncDiskStorageDriver.open({
+          directory: path,
+          ownershipRecovery: { mode: "dead-process", applicationId: "application-b" },
+        }),
+      ).rejects.toMatchObject({ code: "OWNERSHIP_CONFLICT" });
+      await AsyncDiskStorageDriver.recoverAbandonedOwnership({
+        directory: path,
+        confirmation: "I_HAVE_VERIFIED_EXCLUSIVE_ACCESS",
+      });
+    },
+  );
+
+  it.skipIf(process.platform != "linux")(
+    "allows exactly one simultaneous automatic recovery attempt to acquire ownership",
+    async () => {
+      const path = await directory();
+      const crash = `
+        const { AsyncDiskStorageDriver } = await import(${JSON.stringify(builtModuleUrl())});
+        await AsyncDiskStorageDriver.open({
+          directory: process.argv[1],
+          ownershipRecovery: { mode: "dead-process", applicationId: "duraxis-tests" },
+        });
+        process.kill(process.pid, "SIGKILL");
+      `;
+      await child(crash, [path]);
+      const contender = `
+        const { AsyncDiskStorageDriver } = await import(${JSON.stringify(builtModuleUrl())});
+        try {
+          const storage = await AsyncDiskStorageDriver.open({
+            directory: process.argv[1],
+            ownershipRecovery: { mode: "dead-process", applicationId: "duraxis-tests" },
+          });
+          process.stdout.write("acquired\\n");
+          await new Promise((resolve) => process.stdin.once("data", resolve));
+          await storage.close();
+          process.exit(0);
+        } catch (error) {
+          process.stdout.write("conflict:" + (error?.code ?? "unknown") + "\\n");
+          process.exit(error?.code === "OWNERSHIP_CONFLICT" ? 2 : 3);
+        }
+      `;
+      const first = interactiveChild(contender, [path]);
+      const second = interactiveChild(contender, [path]);
+      const lines = await Promise.all([first.firstLine, second.firstLine]);
+      expect(lines.filter((line) => line == "acquired")).toHaveLength(1);
+      expect(lines.filter((line) => line == "conflict:OWNERSHIP_CONFLICT")).toHaveLength(1);
+      first.process.stdin.end("release\n");
+      second.process.stdin.end("release\n");
+      const exits = await Promise.all([first.exit, second.exit]);
+      expect(exits.map(({ code }) => code).sort()).toEqual([0, 2]);
+
+      const reopened = await AsyncDiskStorageDriver.open({
+        directory: path,
+        ownershipRecovery: { mode: "dead-process", applicationId: "duraxis-tests" },
+      });
+      await reopened.close();
+    },
+  );
+
+  it.skipIf(process.platform != "linux")(
+    "fails closed for invalid, corrupted, live-PID, foreign-host, and foreign-namespace locks",
+    async () => {
+      const identity = await linuxProcessIdentity();
+      const corruptedRecord = JSON.parse(ownerLock({ processIdentity: identity })) as {
+        checksum: string;
+      };
+      corruptedRecord.checksum = `${corruptedRecord.checksum.startsWith("0") ? "1" : "0"}${corruptedRecord.checksum.slice(1)}`;
+      const cases = [
+        '{"format":2',
+        JSON.stringify(corruptedRecord),
+        ownerLock({ pid: process.pid, processIdentity: identity }),
+        ownerLock({ hostname: "different-host.invalid", processIdentity: identity }),
+        ownerLock({ processIdentity: "linux:pid:[1]" }),
+      ];
+      for (const contents of cases) {
+        const path = await directory();
+        const lockPath = join(path, ".duraxis-owner.lock");
+        await writeFile(lockPath, contents);
+        await expect(
+          AsyncDiskStorageDriver.open({
+            directory: path,
+            ownershipRecovery: { mode: "dead-process", applicationId: "duraxis-tests" },
+          }),
+        ).rejects.toMatchObject({ code: "OWNERSHIP_CONFLICT" });
+        expect(await readFile(lockPath, "utf8")).toBe(contents);
+      }
+    },
+  );
+
+  it("does not reclaim an existing recovery guard", async () => {
+    const path = await directory();
+    const guard = join(path, ".duraxis-owner.recovery");
+    await writeFile(guard, "incomplete recovery");
+    await expect(AsyncDiskStorageDriver.open({ directory: path })).rejects.toMatchObject({
+      code: "OWNERSHIP_CONFLICT",
+    });
+    expect(await readFile(guard, "utf8")).toBe("incomplete recovery");
+  });
+
+  it("keeps legacy format locks manual-only", async () => {
+    const path = await directory();
+    const payload = {
+      format: 1 as const,
+      ownerId: randomUUID(),
+      pid: 2_147_483_647,
+      hostname: hostname(),
+      createdAt: Date.now(),
+    };
+    await writeFile(
+      join(path, ".duraxis-owner.lock"),
+      JSON.stringify({
+        ...payload,
+        checksum: createHash("sha256").update(JSON.stringify(payload)).digest("hex"),
+      }),
+    );
+    await expect(AsyncDiskStorageDriver.open({ directory: path })).rejects.toMatchObject({
+      code: "OWNERSHIP_CONFLICT",
+    });
+    if (process.platform == "linux")
+      await expect(
+        AsyncDiskStorageDriver.open({
+          directory: path,
+          ownershipRecovery: { mode: "dead-process", applicationId: "duraxis-tests" },
+        }),
+      ).rejects.toMatchObject({ code: "OWNERSHIP_CONFLICT" });
+    await AsyncDiskStorageDriver.recoverAbandonedOwnership({
+      directory: path,
+      confirmation: "I_HAVE_VERIFIED_EXCLUSIVE_ACCESS",
+    });
+    const storage = await AsyncDiskStorageDriver.open({ directory: path });
+    await storage.close();
+  });
+
+  it("shares concurrent close attempts and permits a safe release retry", async () => {
+    const path = await directory();
+    const storage = await AsyncDiskStorageDriver.open({ directory: path });
+    const lockPath = join(path, ".duraxis-owner.lock");
+    const validLock = await readFile(lockPath, "utf8");
+    await writeFile(lockPath, `${validLock.slice(0, -1)}0`);
+    const results = await Promise.allSettled([storage.close(), storage.close()]);
+    expect(results.every((result) => result.status == "rejected")).toBe(true);
+    await writeFile(lockPath, validLock);
+    await expect(storage.close()).resolves.toBeUndefined();
+    await expect(storage.close()).resolves.toBeUndefined();
+    const reopened = await AsyncDiskStorageDriver.open({ directory: path });
+    await Promise.all([reopened.close(), reopened.close(), reopened.close()]);
+  });
+
   it("detects physical payload corruption", async () => {
     const path = await directory();
     const storage = await AsyncDiskStorageDriver.open({ directory: path });
@@ -170,6 +485,9 @@ describe("AsyncDiskStorageDriver persistence", () => {
     await writeFile(journal, bytes);
     await expect(AsyncDiskStorageDriver.open({ directory: path })).rejects.toMatchObject({
       code: "CORRUPTION",
+    });
+    await expect(readFile(join(path, ".duraxis-owner.lock"), "utf8")).rejects.toMatchObject({
+      code: "ENOENT",
     });
   });
 

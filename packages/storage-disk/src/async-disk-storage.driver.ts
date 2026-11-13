@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import {
   mkdir,
@@ -11,7 +10,6 @@ import {
   rm,
   stat,
   truncate,
-  unlink,
   type FileHandle,
 } from "node:fs/promises";
 import {
@@ -35,13 +33,22 @@ import {
   type JournalPayload,
   type StoredMetadata,
 } from "./disk-format.js";
+import {
+  DirectoryOwnership,
+  manuallyRecoverOwnership,
+  normalizeOwnershipRecovery,
+  validateManualRecoveryConfirmation,
+  type NormalizedOwnershipRecovery,
+  type OwnershipRecoveryOptions,
+  type RecoverOwnershipOptions,
+} from "./ownership.js";
 
-const LOCK_FILE = ".duraxis-owner.lock";
 const JOURNAL_FILE = "journal.log";
 const PREVIOUS_JOURNAL = "journal.previous";
 const NEXT_JOURNAL = "journal.next";
 const OBJECTS_DIRECTORY = "objects";
-const OWNERSHIP_CONFIRMATION = "I_HAVE_VERIFIED_EXCLUSIVE_ACCESS";
+
+export type { OwnershipRecoveryOptions, RecoverOwnershipOptions } from "./ownership.js";
 
 export type DiskFaultPoint =
   | "after-object-sync"
@@ -58,6 +65,7 @@ export interface DiskFaultContext {
 
 export interface AsyncDiskStorageOptions {
   readonly directory: string;
+  readonly ownershipRecovery?: OwnershipRecoveryOptions;
   readonly maxKeyBytes?: number;
   readonly maxObjectBytes?: number;
   readonly maxJournalBytes?: number;
@@ -66,11 +74,6 @@ export interface AsyncDiskStorageOptions {
     point: DiskFaultPoint,
     context: DiskFaultContext,
   ) => void | Promise<void>;
-}
-
-export interface RecoverOwnershipOptions {
-  readonly directory: string;
-  readonly confirmation: typeof OWNERSHIP_CONFIRMATION;
 }
 
 export interface DiskDurabilityCapabilities {
@@ -89,14 +92,6 @@ interface MutableMetrics {
   bytesRead: number;
   bytesWritten: number;
   synchronizationWaitMs: number;
-}
-
-interface LockPayload {
-  readonly format: 1;
-  readonly ownerId: string;
-  readonly pid: number;
-  readonly hostname: string;
-  readonly createdAt: number;
 }
 
 function nodeErrorCode(error: unknown): string | undefined {
@@ -125,11 +120,31 @@ async function writeAll(handle: FileHandle, bytes: Uint8Array, position = 0): Pr
   }
 }
 
+async function syncAndClose(handle: FileHandle, context: string): Promise<void> {
+  let syncFailure: unknown;
+  try {
+    await handle.sync();
+  } catch (error) {
+    syncFailure = error;
+  }
+  try {
+    await handle.close();
+  } catch (closeFailure) {
+    if (syncFailure != null)
+      throw new AggregateError(
+        [syncFailure, closeFailure],
+        `${context} sync and close both failed`,
+      );
+    throw closeFailure;
+  }
+  if (syncFailure != null) throw syncFailure;
+}
+
 export class AsyncDiskStorageDriver implements StorageDriver {
   private static readonly activeDirectories = new Set<string>();
 
   private readonly entries = new Map<string, StoredMetadata>();
-  private readonly ownerId = randomUUID();
+  private readonly ownership: DirectoryOwnership;
   private readonly metrics: MutableMetrics = {
     reads: 0,
     writes: 0,
@@ -141,12 +156,13 @@ export class AsyncDiskStorageDriver implements StorageDriver {
   };
   private operationTail: Promise<void> = Promise.resolve();
   private journal!: FileHandle;
-  private lockHandle!: FileHandle;
   private journalBytes = 0;
   private sequence = 0;
   private directorySync = true;
   private closed = false;
   private closing = false;
+  private resourcesClosed = false;
+  private closePromise?: Promise<void>;
   private poisoned = false;
 
   private constructor(
@@ -155,8 +171,10 @@ export class AsyncDiskStorageDriver implements StorageDriver {
     private readonly options: Required<
       Pick<AsyncDiskStorageOptions, "maxKeyBytes" | "maxObjectBytes" | "maxJournalBytes">
     > &
-      AsyncDiskStorageOptions,
-  ) {}
+      AsyncDiskStorageOptions & { readonly ownershipRecovery: NormalizedOwnershipRecovery },
+  ) {
+    this.ownership = new DirectoryOwnership(root, options.ownershipRecovery);
+  }
 
   public static async open(options: AsyncDiskStorageOptions): Promise<AsyncDiskStorageDriver> {
     if (!options || typeof options.directory != "string" || options.directory.trim() == "")
@@ -164,6 +182,7 @@ export class AsyncDiskStorageDriver implements StorageDriver {
     const maxKeyBytes = options.maxKeyBytes ?? 4096;
     const maxObjectBytes = options.maxObjectBytes ?? 256 * 1024 * 1024;
     const maxJournalBytes = options.maxJournalBytes ?? 1024 * 1024 * 1024;
+    const ownershipRecovery = normalizeOwnershipRecovery(options.ownershipRecovery);
     if (!Number.isSafeInteger(maxKeyBytes) || maxKeyBytes < 64 || maxKeyBytes > 64 * 1024)
       throw new RangeError("Invalid maximum storage key size");
     if (
@@ -191,35 +210,33 @@ export class AsyncDiskStorageDriver implements StorageDriver {
       maxKeyBytes,
       maxObjectBytes,
       maxJournalBytes,
+      ownershipRecovery,
     });
     try {
       await driver.initialize();
       return driver;
-    } catch (error) {
-      this.activeDirectories.delete(registryKey);
-      await driver.cleanupFailedOpen();
-      throw error;
+    } catch (cause) {
+      try {
+        await driver.cleanupFailedOpen();
+      } catch (cleanupCause) {
+        if (!driver.ownership.isOwned) this.activeDirectories.delete(registryKey);
+        throw new AggregateError(
+          [cause, cleanupCause],
+          "Storage initialization and ownership cleanup both failed",
+        );
+      }
+      if (!driver.ownership.isOwned) this.activeDirectories.delete(registryKey);
+      throw cause;
     }
   }
 
   public static async recoverAbandonedOwnership(options: RecoverOwnershipOptions): Promise<void> {
-    if (options.confirmation != OWNERSHIP_CONFIRMATION)
-      throw new StorageError("Explicit exclusive-access confirmation is required", "ACCESS_DENIED");
+    validateManualRecoveryConfirmation(options.confirmation);
     const root = await realpath(resolve(options.directory));
     const registryKey = process.platform == "win32" ? root.toLocaleLowerCase("en-US") : root;
     if (this.activeDirectories.has(registryKey))
       throw new StorageError("Cannot recover ownership held by this process", "OWNERSHIP_CONFLICT");
-    try {
-      await unlink(join(root, LOCK_FILE));
-    } catch (error) {
-      if (nodeErrorCode(error) != "ENOENT") throw error;
-    }
-    try {
-      await this.syncDirectoryStatic(root);
-    } catch (error) {
-      if (!["EINVAL", "ENOTSUP", "EBADF", "EISDIR", "EPERM"].includes(nodeErrorCode(error) ?? ""))
-        throw error;
-    }
+    await manuallyRecoverOwnership(root);
   }
 
   public get durability(): DiskDurabilityCapabilities {
@@ -237,44 +254,13 @@ export class AsyncDiskStorageDriver implements StorageDriver {
   }
 
   private async initialize(): Promise<void> {
+    await this.ownership.acquire();
     await mkdir(join(this.root, OBJECTS_DIRECTORY), { recursive: true });
-    const lockPath = join(this.root, LOCK_FILE);
-    try {
-      this.lockHandle = await open(lockPath, "wx", 0o600);
-    } catch (error) {
-      if (nodeErrorCode(error) == "EEXIST")
-        throw new StorageError(
-          "Storage directory has an owner lock; close the owner or perform explicit abandoned-lock recovery",
-          "OWNERSHIP_CONFLICT",
-          { cause: error },
-        );
-      throw error;
-    }
-    const lockPayload: LockPayload = {
-      format: 1,
-      ownerId: this.ownerId,
-      pid: process.pid,
-      hostname: hostname(),
-      createdAt: Date.now(),
-    };
-    const canonical = JSON.stringify(lockPayload);
-    await writeAll(
-      this.lockHandle,
-      new TextEncoder().encode(
-        JSON.stringify({
-          ...lockPayload,
-          checksum: sha256(canonical),
-        }),
-      ),
-    );
-    await this.lockHandle.sync();
-    await this.syncDirectory(this.root);
     await this.recoverJournalRotation();
     const journalPath = join(this.root, JOURNAL_FILE);
     if (!(await exists(journalPath))) {
       const created = await open(journalPath, "wx", 0o600);
-      await created.sync();
-      await created.close();
+      await syncAndClose(created, "New storage journal");
       await this.syncDirectory(this.root);
     }
     const bytes = await readFile(journalPath);
@@ -296,8 +282,7 @@ export class AsyncDiskStorageDriver implements StorageDriver {
     if (decoded.incompleteTail) {
       await truncate(journalPath, decoded.validBytes);
       const repaired = await open(journalPath, "r+");
-      await repaired.sync();
-      await repaired.close();
+      await syncAndClose(repaired, "Repaired storage journal");
     }
     this.journalBytes = decoded.validBytes;
     this.journal = await open(journalPath, "r+");
@@ -537,40 +522,47 @@ export class AsyncDiskStorageDriver implements StorageDriver {
     });
   }
 
-  public async close(): Promise<void> {
-    if (this.closed || this.closing) return;
+  public close(): Promise<void> {
+    if (!this.ownership.isOwned && this.closed) return Promise.resolve();
+    if (this.closePromise) return this.closePromise;
     this.closing = true;
+    const attempt = this.closeAttempt();
+    this.closePromise = attempt;
+    const clearAttempt = () => {
+      if (this.closePromise == attempt) this.closePromise = undefined;
+    };
+    void attempt.then(clearAttempt, clearAttempt);
+    return attempt;
+  }
+
+  private async closeAttempt(): Promise<void> {
+    const failures: unknown[] = [];
     await this.operationTail;
-    let failure: unknown;
     try {
-      if (this.journal) await this.journal.close();
-      if (this.lockHandle) await this.lockHandle.close();
-      const lockPath = join(this.root, LOCK_FILE);
-      const lock = JSON.parse(await readFile(lockPath, "utf8")) as Record<string, unknown>;
-      const canonical = JSON.stringify({
-        format: lock.format,
-        ownerId: lock.ownerId,
-        pid: lock.pid,
-        hostname: lock.hostname,
-        createdAt: lock.createdAt,
-      });
-      if (
-        Object.keys(lock).sort().join(",") != "checksum,createdAt,format,hostname,ownerId,pid" ||
-        lock.format != 1 ||
-        lock.ownerId != this.ownerId ||
-        lock.checksum != sha256(canonical)
-      )
-        throw new StorageError("Storage ownership changed unexpectedly", "OWNERSHIP_CONFLICT");
-      await unlink(lockPath);
-      await this.syncDirectory(this.root);
-    } catch (error) {
-      failure = error;
+      if (!this.resourcesClosed) {
+        try {
+          if (this.journal) await this.journal.close();
+          this.resourcesClosed = true;
+        } catch (error) {
+          failures.push(error);
+        }
+      }
+      if (failures.length == 0) {
+        try {
+          await this.ownership.release();
+        } catch (error) {
+          failures.push(error);
+        }
+      }
     } finally {
       this.closed = true;
       this.closing = false;
-      AsyncDiskStorageDriver.activeDirectories.delete(this.registryKey);
+      if (!this.ownership.isOwned)
+        AsyncDiskStorageDriver.activeDirectories.delete(this.registryKey);
     }
-    if (failure) throw failure;
+    if (failures.length == 1) throw failures[0];
+    if (failures.length > 1)
+      throw new AggregateError(failures, "Storage shutdown encountered multiple failures");
   }
 
   private objectPath(key: string, version: string): string {
@@ -674,18 +666,21 @@ export class AsyncDiskStorageDriver implements StorageDriver {
   }
 
   private async cleanupFailedOpen(): Promise<void> {
+    const failures: unknown[] = [];
     try {
       if (this.journal) await this.journal.close();
-    } catch {}
-    try {
-      if (this.lockHandle) await this.lockHandle.close();
-    } catch {}
-    try {
-      const lockPath = join(this.root, LOCK_FILE);
-      if (await exists(lockPath)) {
-        const value = JSON.parse(await readFile(lockPath, "utf8")) as Record<string, unknown>;
-        if (value.ownerId == this.ownerId) await unlink(lockPath);
+    } catch (error) {
+      failures.push(error);
+    }
+    if (failures.length == 0) {
+      try {
+        await this.ownership.release();
+      } catch (error) {
+        failures.push(error);
       }
-    } catch {}
+    }
+    if (failures.length == 1) throw failures[0];
+    if (failures.length > 1)
+      throw new AggregateError(failures, "Failed storage initialization cleanup");
   }
 }
