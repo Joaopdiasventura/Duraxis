@@ -630,7 +630,7 @@ describe("initialization failures and lifecycle", () => {
     expect(storage.closeCalls).toBe(1);
   });
 
-  it("respects closeStorage false for externally managed drivers", async () => {
+  it("does not close supplied externally managed drivers by default", async () => {
     const storage = new TrackingMemoryStorage();
     const testingModule = await Test.createTestingModule({
       imports: [
@@ -638,7 +638,6 @@ describe("initialization failures and lifecycle", () => {
           driver: storage,
           entities: [User],
           schema: { mode: "create" },
-          closeStorage: false,
         }),
       ],
     }).compile();
@@ -670,10 +669,12 @@ describe("AsyncDiskStorageDriver integration", () => {
     try {
       first = await Test.createTestingModule({
         imports: [
-          DuraxisModule.forRoot({
-            driver: () => AsyncDiskStorageDriver.open({ directory }),
-            entities: [User],
-            schema: { mode: "create" },
+          DuraxisModule.forRootAsync({
+            useFactory: async () => ({
+              driver: () => AsyncDiskStorageDriver.open({ directory }),
+              entities: [User],
+              schema: { mode: "create" },
+            }),
           }),
           DuraxisModule.forFeature([User]),
         ],
@@ -686,10 +687,12 @@ describe("AsyncDiskStorageDriver integration", () => {
 
       second = await Test.createTestingModule({
         imports: [
-          DuraxisModule.forRoot({
-            driver: () => AsyncDiskStorageDriver.open({ directory }),
-            entities: [User],
-            schema: { mode: "validate" },
+          DuraxisModule.forRootAsync({
+            useFactory: async () => ({
+              driver: () => AsyncDiskStorageDriver.open({ directory }),
+              entities: [User],
+              schema: { mode: "validate" },
+            }),
           }),
           DuraxisModule.forFeature([User]),
         ],
