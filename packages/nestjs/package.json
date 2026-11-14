@@ -1,6 +1,6 @@
 {
   "name": "@duraxis/nestjs",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "NestJS modules, injection tokens, repositories, and transactions for Duraxis.",
   "license": "ISC",
   "author": "João Paulo Dias <joaopdias.dev@gmail.com>",
