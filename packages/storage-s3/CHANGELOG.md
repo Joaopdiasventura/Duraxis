@@ -1,5 +1,11 @@
 # @duraxis/storage-s3
 
+## 0.1.1
+
+### Patch Changes
+
+- bc8f6ea: Republish S3 storage driver to restore npm package availability
+
 ## 0.1.0
 
 ### Minor Changes
