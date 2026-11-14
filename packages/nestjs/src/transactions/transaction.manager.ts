@@ -48,33 +48,42 @@ function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
 
 function inheritanceDistance(error: Error, constructor: ErrorConstructor): number {
   if (!(error instanceof constructor)) return Number.POSITIVE_INFINITY;
+
   let distance = 0;
   let prototype: object | null = Object.getPrototypeOf(error);
+
   while (prototype && prototype != constructor.prototype) {
     prototype = Object.getPrototypeOf(prototype);
     distance++;
   }
+
   return distance;
 }
 
 function shouldRollback(error: unknown, options: TransactionalOptions): boolean {
   if (!(error instanceof Error)) return true;
+
   let bestDistance = Number.POSITIVE_INFINITY;
   let rollback = true;
+
   for (const constructor of options.rollbackFor ?? []) {
     const distance = inheritanceDistance(error, constructor);
+
     if (distance < bestDistance) {
       bestDistance = distance;
       rollback = true;
     }
   }
+
   for (const constructor of options.noRollbackFor ?? []) {
     const distance = inheritanceDistance(error, constructor);
-    if (distance <= bestDistance) {
+
+    if (Number.isFinite(distance) && distance <= bestDistance) {
       bestDistance = distance;
       rollback = false;
     }
   }
+
   return rollback;
 }
 
@@ -100,13 +109,17 @@ export class TransactionManager {
 
   public getRepository<TEntity extends object>(entity: EntityClass<TEntity>): Repository<TEntity> {
     const cached = this.#repositories.get(entity);
+
     if (cached) return cached as Repository<TEntity>;
+
     const repository = createTransactionAwareRepository(
       entity,
       this.orm.getRepository(entity),
       this,
     );
+
     this.#repositories.set(entity, repository);
+
     return repository;
   }
 
@@ -118,6 +131,7 @@ export class TransactionManager {
 
   public currentStatus(): TransactionStatus | null {
     const context = this.currentContext();
+
     return context
       ? {
           connectionName: this.connectionName,
@@ -141,23 +155,31 @@ export class TransactionManager {
     invocation: () => unknown,
   ): Promise<TResult> {
     this.validateOptions(options);
+
     const current = this.currentContext();
+
     if (!this.#accepting && !current) throw new TransactionManagerShuttingDownError();
+
     const propagation = options.propagation ?? TransactionPropagation.REQUIRED;
+
     switch (propagation) {
       case TransactionPropagation.REQUIRED:
         return current
           ? await this.join<TResult>(current, options, methodName, invocation)
           : await this.start<TResult>(options, methodName, invocation);
+
       case TransactionPropagation.REQUIRES_NEW:
         return await this.start<TResult>(options, methodName, invocation);
+
       case TransactionPropagation.SUPPORTS:
         return current
           ? await this.join<TResult>(current, options, methodName, invocation)
           : await this.invoke<TResult>(methodName, invocation);
+
       case TransactionPropagation.MANDATORY:
         if (!current) throw new TransactionRequiredError(this.connectionName);
         return await this.join<TResult>(current, options, methodName, invocation);
+
       case TransactionPropagation.NOT_SUPPORTED:
         return current
           ? await this.contexts.suspend(
@@ -165,9 +187,11 @@ export class TransactionManager {
               async () => await this.invoke<TResult>(methodName, invocation),
             )
           : await this.invoke<TResult>(methodName, invocation);
+
       case TransactionPropagation.NEVER:
         if (current) throw new ExistingTransactionError(this.connectionName);
         return await this.invoke<TResult>(methodName, invocation);
+
       case TransactionPropagation.NESTED:
         throw new NestedTransactionNotSupportedError();
     }
@@ -187,7 +211,9 @@ export class TransactionManager {
 
   public assertCapturedContext(captured: TransactionExecutionContext | undefined): void {
     if (!captured) return;
+
     const current = this.currentContext();
+
     if (!captured.physical.active || current?.physical != captured.physical)
       throw new TransactionContextClosedError();
   }
@@ -195,8 +221,11 @@ export class TransactionManager {
   public track(value: PromiseLike<unknown>): Promise<unknown> {
     const context = this.currentContext();
     const promise = Promise.resolve(value);
+
     if (!context) return promise;
+
     let tracked!: Promise<unknown>;
+
     tracked = (async () => {
       try {
         return await promise;
@@ -204,7 +233,9 @@ export class TransactionManager {
         context.physical.pending.delete(tracked);
       }
     })();
+
     context.physical.pending.add(tracked);
+
     return tracked;
   }
 
@@ -214,7 +245,9 @@ export class TransactionManager {
 
   public async shutdown(): Promise<void> {
     this.#accepting = false;
+
     if (this.#activePhysicalTransactions == 0) return;
+
     await new Promise<void>((resolve) => this.#shutdownWaiters.add(resolve));
   }
 
@@ -224,7 +257,9 @@ export class TransactionManager {
     invocation: () => unknown,
   ): Promise<TResult> {
     if (!this.#accepting) throw new TransactionManagerShuttingDownError();
+
     this.#activePhysicalTransactions++;
+
     try {
       const outcome = await this.orm.transaction(async (manager) => {
         const physical: PhysicalTransactionState = {
@@ -233,21 +268,29 @@ export class TransactionManager {
           active: true,
           rollbackOnly: false,
         };
+
         const context: TransactionExecutionContext = {
           physical,
           readOnly: options.readOnly ?? false,
           newTransaction: true,
         };
+
         try {
           return await this.contexts.run(this.connection, context, async () => {
             try {
               const value = await this.invoke<TResult>(methodName, invocation);
+
               await this.rejectPendingOperations(physical);
+
               if (physical.rollbackOnly) throw new RollbackOnlyAbort();
+
               return { type: "result", value } satisfies PhysicalOutcome<TResult>;
             } catch (error) {
               await this.rejectPendingOperations(physical);
+
               if (error instanceof RollbackOnlyAbort || shouldRollback(error, options)) throw error;
+              if (physical.rollbackOnly) throw new RollbackOnlyAbort();
+
               return { type: "committed-error", error } satisfies PhysicalOutcome<TResult>;
             }
           });
@@ -255,6 +298,7 @@ export class TransactionManager {
           physical.active = false;
         }
       });
+
       if (outcome.type == "committed-error") throw outcome.error;
       return outcome.value;
     } catch (error) {
@@ -262,8 +306,10 @@ export class TransactionManager {
       throw error;
     } finally {
       this.#activePhysicalTransactions--;
+
       if (this.#activePhysicalTransactions == 0)
         for (const resolve of this.#shutdownWaiters) resolve();
+
       if (this.#activePhysicalTransactions == 0) this.#shutdownWaiters.clear();
     }
   }
@@ -279,6 +325,7 @@ export class TransactionManager {
       readOnly: current.readOnly || (options.readOnly ?? false),
       newTransaction: false,
     };
+
     return await this.contexts.run(this.connection, context, async () => {
       try {
         return await this.invoke<TResult>(methodName, invocation);
@@ -297,8 +344,10 @@ export class TransactionManager {
 
   private async rejectPendingOperations(physical: PhysicalTransactionState): Promise<void> {
     if (physical.pending.size == 0) return;
+
     const results = await Promise.allSettled([...physical.pending]);
     const rejected = results.find((result) => result.status == "rejected");
+
     throw new UnawaitedTransactionOperationError(
       rejected?.status == "rejected" ? { cause: rejected.reason } : undefined,
     );
@@ -306,9 +355,12 @@ export class TransactionManager {
 
   private validateOptions(options: TransactionalOptions): void {
     if (options.timeout != null) throw new UnsupportedTransactionTimeoutError();
+
     const isolation = options.isolation ?? TransactionIsolation.DEFAULT;
+
     if (isolation != TransactionIsolation.DEFAULT && isolation != TransactionIsolation.SNAPSHOT)
       throw new UnsupportedTransactionIsolationError(String(isolation));
+
     if (options.connectionName != null) normalizeDuraxisConnectionName(options.connectionName);
   }
 }

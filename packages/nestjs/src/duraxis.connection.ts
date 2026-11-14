@@ -35,6 +35,7 @@ export class DuraxisNestConnection implements OnModuleDestroy, OnApplicationShut
 
     try {
       driver = driverIsFactory ? await options.driver() : options.driver;
+
       if (!isStorageDriver(driver))
         throw new TypeError("Duraxis driver factory returned an invalid StorageDriver");
 
@@ -42,6 +43,7 @@ export class DuraxisNestConnection implements OnModuleDestroy, OnApplicationShut
         ...options.database,
         storage: driver,
       });
+
       orm = new DuraxisORM({
         database,
         entities: options.entities ?? [],
@@ -49,7 +51,9 @@ export class DuraxisNestConnection implements OnModuleDestroy, OnApplicationShut
         closeDatabase: true,
         closeStorage,
       });
+
       await orm.initialize();
+
       return new DuraxisNestConnection(name, database, orm, onClosed);
     } catch (cause) {
       try {
@@ -62,6 +66,7 @@ export class DuraxisNestConnection implements OnModuleDestroy, OnApplicationShut
           `Duraxis connection ${name} initialization and cleanup both failed`,
         );
       }
+
       throw cause;
     }
   }
@@ -74,16 +79,19 @@ export class DuraxisNestConnection implements OnModuleDestroy, OnApplicationShut
   public setBeforeClose(callback: () => Promise<void>): void {
     if (this.#beforeClose)
       throw new Error(`Duraxis connection ${this.name} already has a close coordinator`);
+
     this.#beforeClose = callback;
   }
 
   private async closeResources(): Promise<void> {
     const failures: unknown[] = [];
+
     try {
       await this.#beforeClose?.();
     } catch (error) {
       failures.push(error);
     }
+
     try {
       await this.orm.close();
     } catch (error) {
@@ -91,7 +99,9 @@ export class DuraxisNestConnection implements OnModuleDestroy, OnApplicationShut
     } finally {
       this.onClosed();
     }
+
     if (failures.length == 1) throw failures[0];
+
     if (failures.length > 1)
       throw new AggregateError(failures, `Duraxis connection ${this.name} shutdown failed`);
   }

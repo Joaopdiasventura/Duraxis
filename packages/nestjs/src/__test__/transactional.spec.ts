@@ -23,7 +23,6 @@ import {
   TransactionManager,
   TransactionPropagation,
   TransactionRequiredError,
-  Transaction,
   TransactionContextClosedError,
   TransactionalMethodReturnTypeError,
   Transactional,
@@ -177,7 +176,7 @@ class TransactionalService {
     return undefined as unknown as Promise<void>;
   }
 
-  @Transaction()
+  @Transactional()
   public async aliasStatus(): Promise<boolean> {
     return this.transactions.currentStatus()?.active ?? false;
   }
@@ -305,16 +304,14 @@ async function compile(): Promise<TestingModule> {
         autoLoadEntities: true,
         schema: { mode: "create" },
       }),
-      DuraxisModule.forTransactionalFeature(
-        [User, Wallet],
-        [
-          TransactionalService,
-          InnerService,
-          OuterService,
-          ClassTransactionalService,
-          DerivedTransactionalService,
-        ],
-      ),
+      DuraxisModule.forFeature([User, Wallet]),
+    ],
+    providers: [
+      TransactionalService,
+      InnerService,
+      OuterService,
+      ClassTransactionalService,
+      DerivedTransactionalService,
     ],
   }).compile();
 }
@@ -520,15 +517,15 @@ describe("declarative transactions", () => {
     }
   });
 
-  it("documents proxy self-invocation by bypassing the inner transactional boundary", async () => {
+  it("intercepts self-invocation and rolls back the inner transactional boundary", async () => {
     const module = await compile();
     try {
       await expect(module.get(TransactionalService).callSelf("self")).rejects.toThrow(
         "self invocation",
       );
       expect(
-        (await module.get<Repository<User>>(getDuraxisRepositoryToken(User)).findById("self"))?.id,
-      ).toBe("self");
+        await module.get<Repository<User>>(getDuraxisRepositoryToken(User)).findById("self"),
+      ).toBeNull();
     } finally {
       await module.close();
     }
@@ -652,8 +649,9 @@ describe("declarative transactions", () => {
           autoLoadEntities: true,
           schema: { mode: "create" },
         }),
-        DuraxisModule.forTransactionalFeature([User, Wallet], [TransactionalService]),
+        DuraxisModule.forFeature([User, Wallet]),
       ],
+      providers: [TransactionalService],
     }).compile();
     try {
       storage.armed = true;
@@ -720,7 +718,7 @@ describe("declarative transactions", () => {
           autoLoadEntities: true,
           schema: { mode: "create" },
         }),
-        DuraxisModule.forTransactionalFeature([User], [PrimaryService], "primary-tx"),
+        DuraxisModule.forFeature([User], "primary-tx"),
         DuraxisModule.forRoot({
           name: "analytics-tx",
           driver: new MemoryStorageDriver(),
@@ -729,6 +727,7 @@ describe("declarative transactions", () => {
         }),
         DuraxisModule.forFeature([User], "analytics-tx"),
       ],
+      providers: [PrimaryService],
     }).compile();
     try {
       expect(await module.get(PrimaryService).create()).toBe("primary-tx");
@@ -749,7 +748,7 @@ describe("declarative transactions", () => {
     }
   });
 
-  it("registers transactional services without repositories through forTransactionalProviders", async () => {
+  it("supports standard transactional providers without repositories", async () => {
     @Injectable()
     class StatusService {
       public constructor(
@@ -769,8 +768,8 @@ describe("declarative transactions", () => {
           entities: [],
           schema: { mode: "create" },
         }),
-        DuraxisModule.forTransactionalProviders([StatusService]),
       ],
+      providers: [StatusService],
     }).compile();
     try {
       expect(await module.get(StatusService).active()).toBe(true);
@@ -793,8 +792,9 @@ describe("declarative transactions with AsyncDiskStorageDriver", () => {
             autoLoadEntities: true,
             schema: { mode: "create" },
           }),
-          DuraxisModule.forTransactionalFeature([User, Wallet], [TransactionalService]),
+          DuraxisModule.forFeature([User, Wallet]),
         ],
+        providers: [TransactionalService],
       }).compile();
       const service = first.get(TransactionalService);
       await expect(service.atomicFailure("rolled-back-disk")).rejects.toThrow(

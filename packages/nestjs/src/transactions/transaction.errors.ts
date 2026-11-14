@@ -1,5 +1,13 @@
 import { DuraxisNestError } from "../duraxis.errors.js";
 
+export class TransactionalProviderNotReadyError extends DuraxisNestError {
+  public constructor(methodName: string) {
+    super(
+      `Transactional provider ${methodName} is not ready: Nest must complete property injection before invocation. Constructor calls, manual construction, useValue and useFactory instances are unsupported`,
+    );
+  }
+}
+
 export class TransactionRequiredError extends DuraxisNestError {
   public constructor(connectionName: string) {
     super(`An active Duraxis transaction is required for connection ${connectionName}`);

@@ -1,6 +1,10 @@
 import type { TransactionalOptions } from "./transaction.types.js";
-
-export const TRANSACTIONAL_METADATA = Symbol.for("@duraxis/nestjs/transactional");
+import {
+  injectTransactionManagers,
+  instrumentTransactionalMethods,
+  wrapTransactionalMethod,
+} from "./transactional.instrumentation.js";
+import { TRANSACTIONAL_METADATA } from "./transactional.metadata.js";
 
 export function Transactional(
   options: TransactionalOptions = {},
@@ -12,20 +16,14 @@ export function Transactional(
   ) => {
     const metadataTarget = descriptor?.value ?? target;
     Reflect.defineMetadata(TRANSACTIONAL_METADATA, Object.freeze({ ...options }), metadataTarget);
+    if (descriptor && _propertyKey != null) {
+      if (typeof descriptor.value != "function" || typeof target == "function")
+        throw new TypeError("@Transactional() requires an instance method");
+      injectTransactionManagers(target);
+      descriptor.value = wrapTransactionalMethod(descriptor.value, _propertyKey);
+    } else if (typeof target == "function") {
+      injectTransactionManagers(target.prototype);
+      instrumentTransactionalMethods(target.prototype);
+    }
   };
-}
-
-/** Alias of `@Transactional()`. It is unrelated to `Transaction` from `@duraxis/core`. */
-export const Transaction = Transactional;
-
-export function transactionalOptions(
-  instance: object,
-  method: Function,
-): TransactionalOptions | undefined {
-  const classOptions = Reflect.getMetadata(TRANSACTIONAL_METADATA, instance.constructor) as
-    TransactionalOptions | undefined;
-  const methodOptions = Reflect.getMetadata(TRANSACTIONAL_METADATA, method) as
-    TransactionalOptions | undefined;
-  if (!classOptions && !methodOptions) return undefined;
-  return { ...classOptions, ...methodOptions };
 }

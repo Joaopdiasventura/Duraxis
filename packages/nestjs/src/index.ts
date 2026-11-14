@@ -33,6 +33,7 @@ export {
   ReadOnlyTransactionError,
   UnexpectedTransactionRollbackError,
   TransactionalMethodReturnTypeError,
+  TransactionalProviderNotReadyError,
   UnsupportedMixedTransactionError,
   UnawaitedTransactionOperationError,
 } from "./transactions/transaction.errors.js";
@@ -42,4 +43,4 @@ export type {
   TransactionStatus,
   TransactionalOptions,
 } from "./transactions/transaction.types.js";
-export { Transaction, Transactional } from "./transactions/transactional.decorator.js";
+export { Transactional } from "./transactions/transactional.decorator.js";

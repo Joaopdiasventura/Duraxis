@@ -59,17 +59,25 @@ function transactionAwareBuilder<TEntity extends object>(
         return (...arguments_: readonly unknown[]) => {
           transactions.assertCapturedContext(captured);
           let builder = transactions.resolveRepository(entity, baseRepository).createQueryBuilder();
+
           for (const step of steps) {
             const method = Reflect.get(builder, step.method);
+
             if (typeof method != "function") throw new TypeError("Invalid QueryBuilder method");
+
             const next = Reflect.apply(method, builder, step.arguments);
+
             if (!(next instanceof QueryBuilder))
               throw new TypeError("QueryBuilder chain returned an invalid value");
+
             builder = next;
           }
+
           const terminal = Reflect.get(builder, property);
           if (typeof terminal != "function") throw new TypeError("Invalid QueryBuilder terminal");
+
           const result: unknown = Reflect.apply(terminal, builder, arguments_);
+
           return isPromiseLike(result) ? transactions.track(result) : result;
         };
 
@@ -85,7 +93,7 @@ export function createTransactionAwareRepository<TEntity extends object>(
   transactions: TransactionManager,
 ): Repository<TEntity> {
   return new Proxy(baseRepository, {
-    get(target, property) {
+    get(_, property) {
       if (property == "createQueryBuilder")
         return () =>
           transactionAwareBuilder(
@@ -101,10 +109,14 @@ export function createTransactionAwareRepository<TEntity extends object>(
 
       return (...arguments_: readonly unknown[]) => {
         if (WRITE_METHODS.has(property)) transactions.assertWriteAllowed(String(property));
+
         const current = transactions.resolveRepository(entity, baseRepository);
         const method = Reflect.get(current, property, current);
+
         if (typeof method != "function") throw new TypeError("Invalid Repository method");
+
         const result: unknown = Reflect.apply(method, current, arguments_);
+
         return isPromiseLike(result) ? transactions.track(result) : result;
       };
     },
@@ -120,14 +132,18 @@ export function createTransactionAwareOrm(
       if (property == "getRepository")
         return <TEntity extends object>(entity: EntityClass<TEntity>): Repository<TEntity> =>
           transactions.getRepository(entity);
+
       if (property == "transaction")
         return (...arguments_: readonly unknown[]) => {
           if (transactions.currentContext()) transactions.rejectMixedTransaction();
           const method = Reflect.get(target, property, target);
+
           if (typeof method != "function") throw new TypeError("Invalid ORM transaction method");
           return Reflect.apply(method, target, arguments_);
         };
+
       const value: unknown = Reflect.get(target, property, target);
+
       return typeof value == "function" ? value.bind(target) : value;
     },
   });

@@ -1,5 +1,5 @@
 import type { DynamicModule, FactoryProvider, Provider, Type, ValueProvider } from "@nestjs/common";
-import { Module } from "@nestjs/common";
+import { Module, Scope } from "@nestjs/common";
 import { DiscoveryModule, DiscoveryService } from "@nestjs/core";
 import type { DuraxisORM, EntityClass, Repository } from "@duraxis/orm";
 import { DuraxisNestConnection } from "./duraxis.connection.js";
@@ -22,7 +22,7 @@ import { discoverFeatureEntities, DuraxisFeatureEntities } from "./duraxis.featu
 import { TransactionContextManager } from "./transactions/transaction-context.manager.js";
 import { TransactionManagerRegistry } from "./transactions/transaction-manager.registry.js";
 import { TransactionManager } from "./transactions/transaction.manager.js";
-import { transactionalServiceProvider } from "./transactions/transactional.proxy.js";
+import { setTransactionalDefaultConnection } from "./transactions/transactional.instrumentation.js";
 
 function rootProviders(
   name: string,
@@ -105,9 +105,20 @@ function featureModule(
   const uniqueEntities = [...new Set(entities)];
   const uniqueServices = [...new Set(services)];
   const repositoryProviders = uniqueEntities.map((entity) => repositoryProvider(entity, name));
-  const serviceProviders = uniqueServices.map((service) =>
-    transactionalServiceProvider(service, name),
-  );
+  // Compatibility registrations still let Nest construct and inject the service once.
+  const serviceProviders = uniqueServices.flatMap((service): Provider[] => {
+    return [
+      { provide: service, useClass: service, scope: Scope.DEFAULT },
+      {
+        provide: Symbol(`${service.name} default transaction connection`),
+        inject: [service],
+        useFactory: (instance: object): string => {
+          setTransactionalDefaultConnection(instance, name);
+          return name;
+        },
+      },
+    ];
+  });
 
   @DuraxisFeatureEntities({ connectionName: name, entities: uniqueEntities })
   class DuraxisFeatureEntitiesMarker {}
@@ -168,6 +179,7 @@ export class DuraxisModule {
     return featureModule(entities, [], connectionName);
   }
 
+  /** @deprecated Use forFeature(entities, connectionName) and regular module providers. */
   public static forTransactionalFeature(
     entities: readonly EntityClass[],
     providers: readonly Type<object>[],
@@ -176,6 +188,7 @@ export class DuraxisModule {
     return featureModule(entities, providers, connectionName);
   }
 
+  /** @deprecated Declare services in the consuming module's providers array. */
   public static forTransactionalProviders(
     providers: readonly Type<object>[],
     connectionName?: string,
