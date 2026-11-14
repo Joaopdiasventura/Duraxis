@@ -14,10 +14,13 @@ export class DuraxisConnectionRegistry {
     if (existing) throw new DuplicateDuraxisConnectionError(name);
 
     let creation!: Promise<DuraxisNestConnection>;
+
     creation = DuraxisNestConnection.create(name, options, () => {
       if (this.#active.get(name) == creation) this.#active.delete(name);
     });
+
     this.#active.set(name, creation);
+
     try {
       return await creation;
     } catch (error) {

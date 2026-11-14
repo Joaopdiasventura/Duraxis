@@ -6,6 +6,7 @@ const repositoryTokens = new WeakMap<Function, Map<string, symbol>>();
 
 export function normalizeDuraxisConnectionName(name?: string): string {
   const normalized = name ?? DEFAULT_DURAXIS_CONNECTION;
+
   if (
     typeof normalized != "string" ||
     normalized.trim() == "" ||
@@ -15,6 +16,7 @@ export function normalizeDuraxisConnectionName(name?: string): string {
     throw new TypeError(
       "Duraxis connection name must be a non-empty string of at most 128 characters",
     );
+
   return normalized;
 }
 
@@ -40,16 +42,21 @@ export function getDuraxisRepositoryToken<TEntity extends object>(
   connectionName?: string,
 ): symbol {
   const name = normalizeDuraxisConnectionName(connectionName);
+
   let byConnection = repositoryTokens.get(entity);
+
   if (!byConnection) {
     byConnection = new Map();
     repositoryTokens.set(entity, byConnection);
   }
+
   let token = byConnection.get(name);
+
   if (!token) {
     token = Symbol(`@duraxis/nestjs/repository/${name}/${entity.name}`);
     byConnection.set(name, token);
   }
+
   return token;
 }
 

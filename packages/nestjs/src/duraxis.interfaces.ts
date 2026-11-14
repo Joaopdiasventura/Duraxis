@@ -11,9 +11,6 @@ export interface DuraxisModuleOptions {
   readonly autoLoadEntities?: boolean;
   readonly database?: Omit<DuraxisDatabaseOptions, "storage">;
   readonly schema?: DuraxisOrmOptions["schema"];
-  /**
-   * Defaults to true for a driver factory and false for a supplied driver instance.
-   */
   readonly closeStorage?: boolean;
 }
 
