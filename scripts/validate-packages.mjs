@@ -8,7 +8,15 @@ import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const mode = process.argv[2] ?? "pack";
-const packageOrder = ["storage", "storage-memory", "storage-disk", "core", "orm", "nestjs"];
+const packageOrder = [
+  "storage",
+  "storage-memory",
+  "storage-disk",
+  "storage-s3",
+  "core",
+  "orm",
+  "nestjs",
+];
 const privatePackage = "storage-testkit";
 const expectedAuthor = "João Paulo Dias <joaopdias.dev@gmail.com>";
 const expectedRepository = "https://github.com/Joaopdiasventura/Duraxis.git";
@@ -112,6 +120,8 @@ function validateManifests() {
   assert.equal(packages.get("storage").sideEffects, false);
   assert.equal(packages.get("storage-memory").sideEffects, false);
   assert.equal(packages.get("storage-disk").sideEffects, false);
+  assert.equal(packages.get("storage-s3").sideEffects, false);
+  assert.ok(packages.get("storage-s3").dependencies["@aws-sdk/client-s3"]);
   assert.equal(packages.get("core").sideEffects, false);
   assert.equal(packages.get("orm").sideEffects, undefined);
   assert.equal(packages.get("nestjs").sideEffects, undefined);
@@ -274,6 +284,7 @@ import { DuraxisModule } from "@duraxis/nestjs";
 import { DuraxisORM } from "@duraxis/orm";
 import { AsyncDiskStorageDriver } from "@duraxis/storage-disk";
 import { MemoryStorageDriver } from "@duraxis/storage-memory";
+import { S3StorageDriver } from "@duraxis/storage-s3";
 import { StorageError } from "@duraxis/storage";
 
 const storage = new MemoryStorageDriver();
@@ -286,6 +297,8 @@ assert.equal(typeof DuraxisORM, "function");
 assert.equal(typeof AsyncDiskStorageDriver.open, "function");
 assert.equal(typeof DuraxisModule.forRoot, "function");
 assert.equal(typeof StorageError, "function");
+const s3 = new S3StorageDriver({ bucket: "duraxis-smoke", client: { region: "us-east-1" } });
+await s3.close();
 await database.close();
 console.log("ESM smoke test passed");
 `,
@@ -301,8 +314,9 @@ const { DuraxisModule } = require("@duraxis/nestjs");
 const { DuraxisORM } = require("@duraxis/orm");
 const { AsyncDiskStorageDriver } = require("@duraxis/storage-disk");
 const { MemoryStorageDriver } = require("@duraxis/storage-memory");
+const { S3StorageDriver } = require("@duraxis/storage-s3");
 const { StorageError } = require("@duraxis/storage");
-for (const value of [DuraxisDatabase, DuraxisModule, DuraxisORM, AsyncDiskStorageDriver, MemoryStorageDriver, StorageError]) {
+for (const value of [DuraxisDatabase, DuraxisModule, DuraxisORM, AsyncDiskStorageDriver, MemoryStorageDriver, S3StorageDriver, StorageError]) {
   assert.equal(typeof value, "function");
 }
 console.log("CommonJS smoke test passed");
@@ -317,9 +331,13 @@ import { DuraxisModule } from "@duraxis/nestjs";
 import type { DuraxisORM } from "@duraxis/orm";
 import { AsyncDiskStorageDriver } from "@duraxis/storage-disk";
 import { MemoryStorageDriver } from "@duraxis/storage-memory";
+import { S3StorageDriver, type S3StorageDriverOptions } from "@duraxis/storage-s3";
 import type { StorageDriver } from "@duraxis/storage";
 
 const storage: StorageDriver = new MemoryStorageDriver();
+const s3Options: S3StorageDriverOptions = { bucket: "duraxis-smoke", client: { region: "us-east-1" } };
+const s3: StorageDriver = new S3StorageDriver(s3Options);
+void s3;
 const database = new DuraxisDatabase({ storage });
 const ormTypeCheck: DuraxisORM | undefined = undefined;
 void database;

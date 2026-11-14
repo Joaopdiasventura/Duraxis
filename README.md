@@ -9,15 +9,16 @@ entre versões menores; avalie os testes e os limites documentados antes de usar
 
 ## Arquitetura modular
 
-| Pacote                     | Responsabilidade                                                                |
-| -------------------------- | ------------------------------------------------------------------------------- |
-| `@duraxis/storage`         | Contrato `StorageDriver`, tipos de leitura/escrita condicional e erros comuns.  |
-| `@duraxis/storage-memory`  | Driver volátil em memória para testes e desenvolvimento.                        |
-| `@duraxis/storage-disk`    | Driver assíncrono para um diretório local, com journal e posse exclusiva.       |
-| `@duraxis/core`            | Banco transacional, catálogo, índices, consultas, recuperação e coleta de lixo. |
-| `@duraxis/orm`             | Entidades com decorators, schema, repositórios, queries e transações ORM.       |
-| `@duraxis/nestjs`          | Módulos dinâmicos, injeção e transações declarativas para NestJS.               |
-| `@duraxis/storage-testkit` | Suíte interna de conformidade para drivers; pacote privado, não publicado.      |
+| Pacote                     | Responsabilidade                                                                  |
+| -------------------------- | --------------------------------------------------------------------------------- |
+| `@duraxis/storage`         | Contrato `StorageDriver`, tipos de leitura/escrita condicional e erros comuns.    |
+| `@duraxis/storage-memory`  | Driver volátil em memória para testes e desenvolvimento.                          |
+| `@duraxis/storage-disk`    | Driver assíncrono para um diretório local, com journal e posse exclusiva.         |
+| `@duraxis/storage-s3`      | Driver Amazon S3 com escritas condicionais e cliente AWS gerenciado internamente. |
+| `@duraxis/core`            | Banco transacional, catálogo, índices, consultas, recuperação e coleta de lixo.   |
+| `@duraxis/orm`             | Entidades com decorators, schema, repositórios, queries e transações ORM.         |
+| `@duraxis/nestjs`          | Módulos dinâmicos, injeção e transações declarativas para NestJS.                 |
+| `@duraxis/storage-testkit` | Suíte interna de conformidade para drivers; pacote privado, não publicado.        |
 
 As dependências de execução seguem a direção `storage → drivers/core → orm → nestjs`.
 
@@ -38,7 +39,8 @@ pnpm add @duraxis/core @duraxis/storage-memory
 # yarn add @duraxis/core @duraxis/storage-memory
 ```
 
-Para persistência local, troque o driver por `@duraxis/storage-disk`. Para mapeamento de
+Para persistência local, troque o driver por `@duraxis/storage-disk`. Para persistência no S3,
+use [`@duraxis/storage-s3`](packages/storage-s3/README.md), sem instalar o SDK AWS separadamente. Para mapeamento de
 entidades, adicione `@duraxis/orm`; projetos NestJS também adicionam `@duraxis/nestjs` e os peers
 do Nest.
 

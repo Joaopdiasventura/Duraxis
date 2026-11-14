@@ -6,6 +6,7 @@ export default defineConfig({
       "./packages/storage/vitest.config.ts",
       "./packages/storage-memory/vitest.config.ts",
       "./packages/storage-disk/vitest.config.ts",
+      "./packages/storage-s3/vitest.config.ts",
       "./packages/core/vitest.config.ts",
       "./packages/orm/vitest.config.ts",
       "./packages/nestjs/vitest.config.ts",
