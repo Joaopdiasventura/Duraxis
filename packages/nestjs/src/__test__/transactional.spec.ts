@@ -23,7 +23,6 @@ import {
   TransactionManager,
   TransactionPropagation,
   TransactionRequiredError,
-  Transaction,
   TransactionContextClosedError,
   TransactionalMethodReturnTypeError,
   Transactional,
@@ -177,7 +176,7 @@ class TransactionalService {
     return undefined as unknown as Promise<void>;
   }
 
-  @Transaction()
+  @Transactional()
   public async aliasStatus(): Promise<boolean> {
     return this.transactions.currentStatus()?.active ?? false;
   }
