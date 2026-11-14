@@ -1,6 +1,6 @@
 {
   "name": "@duraxis/storage-s3",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Amazon S3 conditional storage driver for Duraxis.",
   "license": "ISC",
   "author": "João Paulo Dias <joaopdias.dev@gmail.com>",
