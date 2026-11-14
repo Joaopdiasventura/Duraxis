@@ -108,14 +108,14 @@ function interactiveChild(
     };
     childProcess.stdout.on("data", onData);
     childProcess.on("error", reject);
-    childProcess.on("exit", () => {
+    childProcess.on("close", () => {
       if (!stdout.includes("\n"))
         reject(new Error(`Child exited before reporting ownership: ${stderr}`));
     });
   });
   const exit = new Promise<{ code: number | null; stderr: string }>((resolveExit, reject) => {
     childProcess.on("error", reject);
-    childProcess.on("exit", (code) => resolveExit({ code, stderr }));
+    childProcess.on("close", (code) => resolveExit({ code, stderr }));
   });
   return { process: childProcess, firstLine, exit };
 }
@@ -355,13 +355,24 @@ describe("AsyncDiskStorageDriver persistence", () => {
       `;
       const first = interactiveChild(contender, [path]);
       const second = interactiveChild(contender, [path]);
-      const lines = await Promise.all([first.firstLine, second.firstLine]);
-      expect(lines.filter((line) => line == "acquired")).toHaveLength(1);
-      expect(lines.filter((line) => line == "conflict:OWNERSHIP_CONFLICT")).toHaveLength(1);
-      first.process.stdin.end("release\n");
-      second.process.stdin.end("release\n");
-      const exits = await Promise.all([first.exit, second.exit]);
-      expect(exits.map(({ code }) => code).sort()).toEqual([0, 2]);
+      const contenders = [first, second];
+      try {
+        const lines = await Promise.all(contenders.map((contender) => contender.firstLine));
+        expect(lines.filter((line) => line == "acquired")).toHaveLength(1);
+        expect(lines.filter((line) => line == "conflict:OWNERSHIP_CONFLICT")).toHaveLength(1);
+        // Only the owner waits for input; the rejected contender exits without reading stdin.
+        for (const [index, contender] of contenders.entries()) {
+          if (lines[index] == "acquired") contender.process.stdin.end("release\n");
+        }
+        const exits = await Promise.all(contenders.map((contender) => contender.exit));
+        expect(exits.map(({ code }) => code).sort()).toEqual([0, 2]);
+      } finally {
+        for (const contender of contenders) {
+          if (contender.process.exitCode == null && contender.process.signalCode == null)
+            contender.process.kill();
+        }
+        await Promise.all(contenders.map((contender) => contender.exit));
+      }
 
       const reopened = await AsyncDiskStorageDriver.open({
         directory: path,
