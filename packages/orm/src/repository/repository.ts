@@ -198,10 +198,10 @@ export class Repository<TEntity extends object> {
     options: Pick<FindOptions<TEntity>, "where" | "signal"> = {},
   ): Promise<number> {
     const query = this.#queryMapper.map(options);
-    
+
     let count = 0;
     for await (const _row of this.sourceQuery(query, options.signal)) count++;
-    
+
     return count;
   }
 
@@ -230,7 +230,7 @@ export class Repository<TEntity extends object> {
   ): RelationOperations<TEntity> {
     this.runtime.assertUsable();
     const relation = this.metadata.relationForProperty(property);
-    
+
     if (!relation) throw new Error(`Unknown relation: ${this.metadata.collection}.${property}`);
     return new RelationOperations(this.metadata, relation, (action) => this.write(action));
   }
@@ -250,14 +250,14 @@ export class Repository<TEntity extends object> {
   private mapFind(options: FindOptions<TEntity>): LogicalQuery {
     const query = this.#queryMapper.map(options);
     if (!query.projection || !options.relations) return query;
-    
+
     const projection = new Set(query.projection);
     for (const [property, enabled] of Object.entries(options.relations)) {
       if (!enabled) continue;
       const relation = this.metadata.relationForProperty(property);
       if (relation?.owner && relation.foreignKeyField) projection.add(relation.foreignKeyField);
     }
-    
+
     return { ...query, projection: [...projection] };
   }
 

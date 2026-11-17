@@ -178,17 +178,17 @@ export class MetadataRegistry {
 
     for (const [entity, raw] of [...this.#metadata]) {
       const metadata = raw as EntityMetadata;
-    
+
       const relations = (preliminary.get(entity) ?? []).map((relation) => {
         if (relation.kind != "many-to-many" || relation.joinTable) return relation;
-    
+
         const inverse = preliminary
           .get(relation.target)!
           .find((candidate) => candidate.property == relation.inverseProperty)!;
-    
-          return { ...relation, joinTable: inverse.joinTable };
+
+        return { ...relation, joinTable: inverse.joinTable };
       });
-    
+
       this.#metadata.set(
         entity,
         new EntityMetadata({
@@ -201,9 +201,9 @@ export class MetadataRegistry {
         }),
       );
     }
-    
+
     this.#finalized = true;
-    
+
     return this;
   }
 

@@ -20,7 +20,7 @@ export class OrmTransactionManager implements TransactionContext {
     const cached = this.#repositories.get(entity);
 
     if (cached) return cached as Repository<TEntity>;
-    
+
     const repository = new Repository(this.registry.get(entity), {
       database: this.database,
       transaction: this.transaction,
@@ -29,7 +29,7 @@ export class OrmTransactionManager implements TransactionContext {
     });
 
     this.#repositories.set(entity, repository);
-    
+
     return repository;
   }
 

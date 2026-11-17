@@ -114,21 +114,21 @@ export function createTransactionAwareRepository<TEntity extends object>(
 
                 if (operation == "add" || operation == "remove")
                   transactions.assertWriteAllowed(`relations.${String(operation)}`);
-                
+
                 const current = transactions.resolveRepository(entity, baseRepository);
-                
+
                 const relationMethod = Reflect.get(current, property, current);
-                
+
                 if (typeof relationMethod != "function")
                   throw new TypeError("Invalid Repository relation method");
-                
+
                 const operations = Reflect.apply(relationMethod, current, arguments_) as object;
                 const value: unknown = Reflect.get(operations, operation, operations);
-                
+
                 if (typeof value != "function") throw new TypeError("Invalid relation operation");
-                
+
                 const result: unknown = Reflect.apply(value, operations, operationArguments);
-                
+
                 return isPromiseLike(result) ? transactions.track(result) : result;
               };
             },
