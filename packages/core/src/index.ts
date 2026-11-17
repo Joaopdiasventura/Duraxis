@@ -12,6 +12,15 @@ export { TransactionStateError } from "./errors/transaction-state.error.js";
 
 export { CommitOutcomeUnknownError } from "./errors/commit-outcome-unknown.error.js";
 
+export {
+  ForeignKeyViolationError,
+  ReferencedRecordNotFoundError,
+  ReferencedRecordRestrictedError,
+  InvalidForeignKeyDefinitionError,
+} from "./errors/foreign-key.error.js";
+
+export { ForeignKeyManager } from "./relations/foreign-key-manager.js";
+
 export { RecoveryManager } from "./recovery/recovery-manager.js";
 
 export type { CommitStatus } from "./recovery/recovery-manager.js";
@@ -100,6 +109,8 @@ export type {
   SecondaryIndexDefinition,
   CollectionDefinition,
   DocumentRecord,
+  ReferentialAction,
+  ForeignKeyDefinition,
 } from "./catalog/collection-schema.js";
 
 export type { CollectionRow } from "./database/duraxis-database.js";

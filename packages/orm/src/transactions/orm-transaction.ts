@@ -18,13 +18,18 @@ export class OrmTransactionManager implements TransactionContext {
   public getRepository<TEntity extends object>(entity: EntityClass<TEntity>): Repository<TEntity> {
     this.assertActive();
     const cached = this.#repositories.get(entity);
+
     if (cached) return cached as Repository<TEntity>;
+    
     const repository = new Repository(this.registry.get(entity), {
       database: this.database,
       transaction: this.transaction,
+      registry: this.registry,
       assertUsable: () => this.assertActive(),
     });
+
     this.#repositories.set(entity, repository);
+    
     return repository;
   }
 

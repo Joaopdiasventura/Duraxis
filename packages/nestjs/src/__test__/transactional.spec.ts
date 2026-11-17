@@ -6,7 +6,15 @@ import { join } from "node:path";
 import { Injectable } from "@nestjs/common";
 import { Test, type TestingModule } from "@nestjs/testing";
 import { CommitOutcomeUnknownError, TransactionConflictError } from "@duraxis/core";
-import { Column, Entity, PrimaryKey, type DuraxisORM, type Repository } from "@duraxis/orm";
+import {
+  Column,
+  Entity,
+  JoinTable,
+  ManyToMany,
+  PrimaryKey,
+  type DuraxisORM,
+  type Repository,
+} from "@duraxis/orm";
 import { MemoryStorageDriver } from "@duraxis/storage-memory";
 import { AsyncDiskStorageDriver } from "@duraxis/storage-disk";
 import type { WriteOptions, WriteResult } from "@duraxis/storage";
@@ -51,6 +59,44 @@ class Wallet {
 
   @Column({ type: "number", required: true })
   balance!: number;
+}
+
+@Entity("tx_posts")
+class RelationPost {
+  @PrimaryKey() id!: string;
+  @Column({ type: "string", required: true }) title!: string;
+  @JoinTable({ name: "tx_post_tags", joinColumn: "postId", inverseJoinColumn: "tagId" })
+  @ManyToMany(() => RelationTag, (tag) => tag.posts)
+  tags?: RelationTag[];
+}
+
+@Entity("tx_tags")
+class RelationTag {
+  @PrimaryKey() id!: string;
+  @Column({ type: "string", required: true }) label!: string;
+  @ManyToMany(() => RelationPost, (post) => post.tags)
+  posts?: RelationPost[];
+}
+
+@Injectable()
+class RelationalTransactionalService {
+  public constructor(
+    @InjectDuraxisRepository(RelationPost) private readonly posts: Repository<RelationPost>,
+    @InjectDuraxisRepository(RelationTag) private readonly tags: Repository<RelationTag>,
+  ) {}
+
+  @Transactional()
+  public async create(rollback = false): Promise<void> {
+    await this.posts.insert({ id: "post", title: "Post" });
+    await this.tags.insert({ id: "tag", label: "Tag" });
+    await this.posts.relations("tags").add("post", "tag");
+    if (rollback) throw new Error("rollback relation");
+  }
+
+  @Transactional({ readOnly: true })
+  public async addReadOnly(): Promise<void> {
+    await this.posts.relations("tags").add("post", "tag");
+  }
 }
 
 class ValidationError extends Error {}
@@ -317,6 +363,54 @@ async function compile(): Promise<TestingModule> {
 }
 
 describe("declarative transactions", () => {
+  it("routes relational operations through the NestJS transaction proxy", async () => {
+    const module = await Test.createTestingModule({
+      imports: [
+        DuraxisModule.forRoot({
+          driver: new MemoryStorageDriver(),
+          autoLoadEntities: true,
+          schema: { mode: "create" },
+        }),
+        DuraxisModule.forFeature([RelationPost, RelationTag]),
+      ],
+      providers: [RelationalTransactionalService],
+    }).compile();
+    try {
+      const service = module.get(RelationalTransactionalService);
+      await service.create();
+      const posts = module.get<Repository<RelationPost>>(getDuraxisRepositoryToken(RelationPost));
+      expect((await posts.findById("post", { relations: { tags: true } }))?.tags?.[0]?.id).toBe(
+        "tag",
+      );
+      await expect(service.addReadOnly()).rejects.toBeInstanceOf(ReadOnlyTransactionError);
+    } finally {
+      await module.close();
+    }
+
+    const rollbackModule = await Test.createTestingModule({
+      imports: [
+        DuraxisModule.forRoot({
+          driver: new MemoryStorageDriver(),
+          autoLoadEntities: true,
+          schema: { mode: "create" },
+        }),
+        DuraxisModule.forFeature([RelationPost, RelationTag]),
+      ],
+      providers: [RelationalTransactionalService],
+    }).compile();
+    try {
+      await expect(rollbackModule.get(RelationalTransactionalService).create(true)).rejects.toThrow(
+        "rollback relation",
+      );
+      const posts = rollbackModule.get<Repository<RelationPost>>(
+        getDuraxisRepositoryToken(RelationPost),
+      );
+      expect(await posts.findById("post")).toBeNull();
+    } finally {
+      await rollbackModule.close();
+    }
+  });
+
   it("commits atomically and gives injected repositories read-your-writes", async () => {
     const module = await compile();
     try {

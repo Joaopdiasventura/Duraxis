@@ -61,6 +61,7 @@ export class DuraxisORM {
 
     const repository = new Repository(this.#registry.get(entity), {
       database: this.options.database,
+      registry: this.#registry,
       assertUsable: () => this.assertReady(),
     });
 

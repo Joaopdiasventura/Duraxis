@@ -35,6 +35,29 @@ export interface IndexMetadata<TEntity extends object = object> {
   readonly fields: readonly IndexFieldMetadata<TEntity>[];
 }
 
+export type RelationKind = "many-to-one" | "one-to-many" | "one-to-one" | "many-to-many";
+
+export interface JoinTableMetadata {
+  readonly name: string;
+  readonly ownerField: string;
+  readonly inverseField: string;
+}
+
+export interface RelationMetadata<TEntity extends object = object> {
+  readonly kind: RelationKind;
+  readonly property: EntityProperty<TEntity>;
+  readonly target: EntityClass;
+  readonly targetCollection: string;
+  readonly inverseProperty?: string;
+  readonly owner: boolean;
+  readonly foreignKeyProperty?: string;
+  readonly foreignKeyField?: string;
+  readonly required: boolean;
+  readonly nullable: boolean;
+  readonly onDelete: "RESTRICT" | "CASCADE" | "SET_NULL";
+  readonly joinTable?: JoinTableMetadata;
+}
+
 export class EntityMetadata<TEntity extends object = object> {
   readonly #byProperty: ReadonlyMap<string, ColumnMetadata<TEntity>>;
   readonly #byField: ReadonlyMap<string, ColumnMetadata<TEntity>>;
@@ -44,6 +67,7 @@ export class EntityMetadata<TEntity extends object = object> {
   public readonly primaryKey: EntityProperty<TEntity>;
   public readonly columns: readonly ColumnMetadata<TEntity>[];
   public readonly indexes: readonly IndexMetadata<TEntity>[];
+  public readonly relations: readonly RelationMetadata<TEntity>[];
 
   public constructor(options: {
     readonly entity: EntityClass<TEntity>;
@@ -51,6 +75,7 @@ export class EntityMetadata<TEntity extends object = object> {
     readonly primaryKey: EntityProperty<TEntity>;
     readonly columns: readonly ColumnMetadata<TEntity>[];
     readonly indexes: readonly IndexMetadata<TEntity>[];
+    readonly relations?: readonly RelationMetadata<TEntity>[];
   }) {
     this.entity = options.entity;
 
@@ -68,6 +93,15 @@ export class EntityMetadata<TEntity extends object = object> {
       ),
     );
 
+    this.relations = Object.freeze(
+      (options.relations ?? []).map((relation) =>
+        Object.freeze({
+          ...relation,
+          ...(relation.joinTable ? { joinTable: Object.freeze({ ...relation.joinTable }) } : {}),
+        }),
+      ),
+    );
+
     this.#byProperty = new Map(this.columns.map((column) => [column.property, column]));
     this.#byField = new Map(this.columns.map((column) => [column.field, column]));
 
@@ -80,5 +114,9 @@ export class EntityMetadata<TEntity extends object = object> {
 
   public columnForField(field: string): ColumnMetadata<TEntity> | undefined {
     return this.#byField.get(field);
+  }
+
+  public relationForProperty(property: string): RelationMetadata<TEntity> | undefined {
+    return this.relations.find((relation) => relation.property == property);
   }
 }

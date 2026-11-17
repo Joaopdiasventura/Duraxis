@@ -10,10 +10,12 @@ import { CommitOutcomeUnknownError } from "../errors/commit-outcome-unknown.erro
 import { StorageKeyManager } from "../security/storage-key-manager.js";
 import { PrimaryIndex } from "../indexes/primary/primary-index.js";
 import { SecondaryIndexManager } from "../indexes/secondary/secondary-index-manager.js";
+import { ForeignKeyManager } from "../relations/foreign-key-manager.js";
 
 export class CommitCoordinator {
   private readonly primary: PrimaryIndex;
   private readonly secondary: SecondaryIndexManager;
+  private readonly foreignKeys: ForeignKeyManager;
 
   public constructor(
     private readonly storage: StorageDriver,
@@ -21,6 +23,7 @@ export class CommitCoordinator {
   ) {
     this.primary = new PrimaryIndex(storage, keys);
     this.secondary = new SecondaryIndexManager(storage, keys);
+    this.foreignKeys = new ForeignKeyManager(storage, keys);
   }
 
   public async commit(transaction: Transaction): Promise<void> {
@@ -37,9 +40,11 @@ export class CommitCoordinator {
 
     for (const [name, schema] of prepared.schemaChanges) catalog.set(name, schema);
 
+    const writes = await this.foreignKeys.prepare(prepared.snapshot, prepared.writes, catalog);
+
     const changes = new Map<string, string | null>();
 
-    for (const [key, operation] of prepared.writes) {
+    for (const [key, operation] of writes) {
       if (operation.type == "delete") {
         changes.set(key, null);
         continue;
@@ -61,7 +66,7 @@ export class CommitCoordinator {
     const indexRoots = await this.secondary.prepare(
       prepared.snapshot.manifest,
       primaryRoot,
-      prepared.writes,
+      writes,
       catalog,
     );
 

@@ -16,7 +16,7 @@ function requireName(name: unknown, label: string): asserts name is string {
     throw new InvalidMetadataError(`Invalid ${label}: ${String(name)}`);
 }
 
-function hierarchy(entity: Function): readonly DecoratorDraft[] {
+export function decoratorHierarchy(entity: Function): readonly DecoratorDraft[] {
   const result: DecoratorDraft[] = [];
 
   let current: unknown = entity;
@@ -42,7 +42,7 @@ export function buildEntityMetadata<TEntity extends object>(
 
   requireName(own.entityName, "entity name");
 
-  const drafts = hierarchy(entity);
+  const drafts = decoratorHierarchy(entity);
   const columns: ColumnMetadata<TEntity>[] = [];
   const byProperty = new Map<string, ColumnMetadata<TEntity>>();
   const byField = new Map<string, ColumnMetadata<TEntity>>();
@@ -154,5 +154,6 @@ export function buildEntityMetadata<TEntity extends object>(
     primaryKey: primaryKey as EntityProperty<TEntity>,
     columns,
     indexes,
+    relations: [],
   });
 }
