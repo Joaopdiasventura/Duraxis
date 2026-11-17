@@ -1,5 +1,17 @@
 # @duraxis/nestjs changelog
 
+## 0.2.0
+
+### Minor Changes
+
+- 6123078: Add transactional foreign-key integrity, referential actions, ORM relationship decorators, batched relation loading, and ManyToMany association operations.
+
+### Patch Changes
+
+- Updated dependencies [6123078]
+  - @duraxis/core@0.2.0
+  - @duraxis/orm@0.2.0
+
 ## 0.1.2
 
 ### Patch Changes
