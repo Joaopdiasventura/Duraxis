@@ -8,7 +8,7 @@ import {
 } from "@duraxis/core";
 import { SchemaViolationError } from "../errors/index.js";
 import type { MetadataRegistry } from "../metadata/metadata-registry.js";
-import { mapEntitySchema } from "./schema-mapper.js";
+import { mapEntitySchema, mapJunctionSchemas } from "./schema-mapper.js";
 
 export type SchemaMode = "validate" | "create";
 
@@ -35,24 +35,29 @@ export class SchemaManager {
       ]),
     );
 
-    for (const metadata of this.registry.all()) {
-      const expected = normalizeCollection(mapEntitySchema(metadata));
+    const expectedSchemas = [
+      ...this.registry.all().map((metadata) => mapEntitySchema(metadata)),
+      ...mapJunctionSchemas(this.registry.all()),
+    ].map((schema) => normalizeCollection(schema));
+    const missing = expectedSchemas.filter((schema) => !persisted.has(schema.name));
+    if (missing.length && this.mode == "validate")
+      throw new SchemaViolationError(`Missing collection: ${missing[0]!.name}`);
+    if (missing.length) {
+      await this.mutate(
+        () => this.database.defineCollections(missing),
+        `Could not create collections: ${missing.map((schema) => schema.name).join(", ")}`,
+      );
+      for (const schema of missing) persisted.set(schema.name, schema);
+    }
+
+    for (const expected of expectedSchemas) {
       const current = persisted.get(expected.name);
-
-      if (!current) {
-        if (this.mode == "validate")
-          throw new SchemaViolationError(`Missing collection: ${expected.name}`);
-
-        await this.mutate(
-          () => this.database.defineCollection(expected),
-          `Could not create collection: ${expected.name}`,
-        );
-
-        persisted.set(expected.name, expected);
-        continue;
-      }
+      if (!current) throw new SchemaViolationError(`Missing collection: ${expected.name}`);
 
       this.validateFields(expected, current);
+
+      if (!same(expected.foreignKeys ?? [], current.foreignKeys ?? []))
+        throw new SchemaViolationError(`Incompatible foreign keys: ${expected.name}`);
 
       const actualIndexes = indexMap(current);
 

@@ -104,10 +104,20 @@ function immutableCollection(definition: CollectionDefinition): CollectionDefini
     ),
   );
 
+  const foreignKeys = Object.freeze(
+    (normalized.foreignKeys ?? []).map((foreignKey) =>
+      Object.freeze({
+        ...foreignKey,
+        references: Object.freeze({ ...foreignKey.references }),
+      }),
+    ),
+  );
+
   return Object.freeze({
     ...normalized,
     ...(fields == null ? {} : { fields }),
     indexes,
+    ...(foreignKeys.length == 0 ? {} : { foreignKeys }),
   });
 }
 
@@ -193,6 +203,10 @@ export class DuraxisDatabase {
     await this.transaction((tx) => {
       tx.defineCollection(schema);
     });
+  }
+
+  public async defineCollections(schemas: readonly CollectionDefinition[]): Promise<void> {
+    await this.transaction((tx) => tx.defineCollections(schemas));
   }
 
   public async getCollectionDefinitions(): Promise<readonly CollectionDefinition[]> {

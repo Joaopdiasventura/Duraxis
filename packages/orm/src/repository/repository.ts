@@ -13,10 +13,12 @@ import {
 } from "../errors/index.js";
 import { EntityMapper } from "../mapping/entity-mapper.js";
 import type { EntityMetadata } from "../metadata/entity-metadata.js";
-import type { FindOptions, FindPage } from "../query/find-options.js";
+import type { FindOptions, FindPage, Relations } from "../query/find-options.js";
 import { QueryBuilder } from "../query/query-builder.js";
 import { QueryMapper } from "../query/query-mapper.js";
 import type { RepositoryRuntime } from "./repository-options.js";
+import { RelationLoader } from "../relations/relation-loader.js";
+import { RelationOperations } from "../relations/relation-operations.js";
 
 export class Repository<TEntity extends object> {
   readonly #entityMapper: EntityMapper<TEntity>;
@@ -126,40 +128,66 @@ export class Repository<TEntity extends object> {
     return deleted;
   }
 
-  public async findById(id: string): Promise<TEntity | null> {
+  public async findById(
+    id: string,
+    options: { readonly relations?: Relations<TEntity>; readonly signal?: AbortSignal } = {},
+  ): Promise<TEntity | null> {
     this.runtime.assertUsable();
 
     if (this.runtime.transaction) {
       const document = await this.runtime.transaction.getDocument(this.metadata.collection, id);
-      return document ? this.#entityMapper.hydrate(id, document) : null;
+      if (!document) return null;
+
+      const entity = this.#entityMapper.hydrate(id, document);
+      await this.loadRelations([entity], options.relations, options.signal);
+
+      return entity;
     }
-    const page = await this.runtime.database.queryPage({
-      collection: this.metadata.collection,
-      where: { type: "comparison", field: "$id", operator: "eq", value: id },
-      limit: 1,
-    });
+
+    const page = await this.runtime.database.queryPage(
+      {
+        collection: this.metadata.collection,
+        where: { type: "comparison", field: "$id", operator: "eq", value: id },
+        limit: 1,
+      },
+      { signal: options.signal },
+    );
 
     const row = page.rows[0];
-    return row ? this.#entityMapper.hydrate(row.id, row.document) : null;
+    if (!row) return null;
+
+    const entity = this.#entityMapper.hydrate(row.id, row.document);
+    await this.loadRelations([entity], options.relations, options.signal);
+
+    return entity;
   }
 
   public async findOne(options: FindOptions<TEntity> = {}): Promise<TEntity | null> {
-    const rows = await this.queryRows(
-      { ...this.#queryMapper.map(options), limit: 1 },
-      options.signal,
-    );
-    return rows[0] ? this.hydrate(rows[0]) : null;
+    const rows = await this.queryRows({ ...this.mapFind(options), limit: 1 }, options.signal);
+    if (!rows[0]) return null;
+
+    const entity = this.hydrate(rows[0]);
+    await this.loadRelations([entity], options.relations, options.signal);
+
+    return entity;
   }
 
   public async find(options: FindOptions<TEntity> = {}): Promise<readonly TEntity[]> {
-    return (await this.queryRows(this.#queryMapper.map(options), options.signal)).map((row) =>
+    const entities = (await this.queryRows(this.mapFind(options), options.signal)).map((row) =>
       this.hydrate(row),
     );
+
+    await this.loadRelations(entities, options.relations, options.signal);
+    return entities;
   }
 
   public async findPage(options: FindOptions<TEntity>): Promise<FindPage<TEntity>> {
-    const page = await this.queryPage(this.#queryMapper.map(options), options.signal);
-    return { items: page.rows.map((row) => this.hydrate(row)), nextCursor: page.nextCursor };
+    const page = await this.queryPage(this.mapFind(options), options.signal);
+    const items = page.rows.map((row) => this.hydrate(row));
+
+    await this.loadRelations(items, options.relations, options.signal);
+
+    return { items, nextCursor: page.nextCursor };
   }
 
   public async exists(options: FindOptions<TEntity> = {}): Promise<boolean> {
@@ -170,8 +198,10 @@ export class Repository<TEntity extends object> {
     options: Pick<FindOptions<TEntity>, "where" | "signal"> = {},
   ): Promise<number> {
     const query = this.#queryMapper.map(options);
+
     let count = 0;
     for await (const _row of this.sourceQuery(query, options.signal)) count++;
+
     return count;
   }
 
@@ -195,8 +225,40 @@ export class Repository<TEntity extends object> {
     );
   }
 
+  public relations<K extends Extract<keyof TEntity, string>>(
+    property: K,
+  ): RelationOperations<TEntity> {
+    this.runtime.assertUsable();
+    const relation = this.metadata.relationForProperty(property);
+
+    if (!relation) throw new Error(`Unknown relation: ${this.metadata.collection}.${property}`);
+    return new RelationOperations(this.metadata, relation, (action) => this.write(action));
+  }
+
   private hydrate(row: QueryRow): TEntity {
     return this.#entityMapper.hydrate(row.id, row.document);
+  }
+
+  private loadRelations(
+    entities: readonly TEntity[],
+    relations?: Relations<TEntity>,
+    signal?: AbortSignal,
+  ): Promise<readonly TEntity[]> {
+    return new RelationLoader(this.metadata, this.runtime).load(entities, relations, signal);
+  }
+
+  private mapFind(options: FindOptions<TEntity>): LogicalQuery {
+    const query = this.#queryMapper.map(options);
+    if (!query.projection || !options.relations) return query;
+
+    const projection = new Set(query.projection);
+    for (const [property, enabled] of Object.entries(options.relations)) {
+      if (!enabled) continue;
+      const relation = this.metadata.relationForProperty(property);
+      if (relation?.owner && relation.foreignKeyField) projection.add(relation.foreignKeyField);
+    }
+
+    return { ...query, projection: [...projection] };
   }
 
   private async queryRows(query: LogicalQuery, signal?: AbortSignal): Promise<readonly QueryRow[]> {

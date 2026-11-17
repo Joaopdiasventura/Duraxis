@@ -151,6 +151,19 @@ export class Transaction {
     this.schemas.set(definition.name, cloneSchema(definition));
   }
 
+  public defineCollections(definitions: readonly CollectionDefinition[]): void {
+    this.assertActive();
+    const names = new Set<string>();
+    for (const definition of definitions) {
+      validateCollection(definition);
+      if (names.has(definition.name) || this.collection(definition.name))
+        throw new Error(`Collection already exists: ${definition.name}`);
+      names.add(definition.name);
+    }
+    for (const definition of definitions)
+      this.schemas.set(definition.name, cloneSchema(definition));
+  }
+
   public addIndex(collection: string, index: SecondaryIndexDefinition): void {
     this.assertActive();
 

@@ -19,12 +19,34 @@ export interface DraftCompositeIndex {
   readonly fields: readonly { readonly property: string; readonly order: "ASC" | "DESC" }[];
 }
 
+export type RelationKind = "many-to-one" | "one-to-many" | "one-to-one" | "many-to-many";
+export type RelationTarget = () => EntityClass;
+export type InverseSelector = (entity: never) => unknown;
+
+export interface DraftRelation {
+  readonly kind: RelationKind;
+  readonly property: string;
+  readonly target: RelationTarget;
+  readonly inverse?: InverseSelector;
+  readonly foreignKey?: string;
+  readonly onDelete?: "RESTRICT" | "CASCADE" | "SET_NULL";
+}
+
+export interface DraftJoinTable {
+  readonly property: string;
+  readonly name: string;
+  readonly joinColumn?: string;
+  readonly inverseJoinColumn?: string;
+}
+
 export interface DecoratorDraft {
   entityName?: string;
   entityApplications: number;
   readonly columns: DraftColumn[];
   readonly primaryKeys: string[];
   readonly indexes: Array<DraftPropertyIndex | DraftCompositeIndex>;
+  readonly relations: DraftRelation[];
+  readonly joinTables: DraftJoinTable[];
 }
 
 const drafts = new WeakMap<Function, DecoratorDraft>();
@@ -37,7 +59,14 @@ export function mutableDraft(entity: Function): DecoratorDraft {
   let draft = drafts.get(entity);
 
   if (!draft) {
-    draft = { entityApplications: 0, columns: [], primaryKeys: [], indexes: [] };
+    draft = {
+      entityApplications: 0,
+      columns: [],
+      primaryKeys: [],
+      indexes: [],
+      relations: [],
+      joinTables: [],
+    };
     drafts.set(entity, draft);
   }
 

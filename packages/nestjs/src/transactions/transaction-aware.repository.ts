@@ -103,6 +103,38 @@ export function createTransactionAwareRepository<TEntity extends object>(
             transactions.currentContext(),
           );
 
+      if (property == "relations")
+        return (...arguments_: readonly unknown[]) => {
+          const captured = transactions.currentContext();
+
+          return new Proxy(Object.create(null) as object, {
+            get(_target, operation) {
+              return (...operationArguments: readonly unknown[]) => {
+                transactions.assertCapturedContext(captured);
+
+                if (operation == "add" || operation == "remove")
+                  transactions.assertWriteAllowed(`relations.${String(operation)}`);
+
+                const current = transactions.resolveRepository(entity, baseRepository);
+
+                const relationMethod = Reflect.get(current, property, current);
+
+                if (typeof relationMethod != "function")
+                  throw new TypeError("Invalid Repository relation method");
+
+                const operations = Reflect.apply(relationMethod, current, arguments_) as object;
+                const value: unknown = Reflect.get(operations, operation, operations);
+
+                if (typeof value != "function") throw new TypeError("Invalid relation operation");
+
+                const result: unknown = Reflect.apply(value, operations, operationArguments);
+
+                return isPromiseLike(result) ? transactions.track(result) : result;
+              };
+            },
+          });
+        };
+
       const effective = transactions.resolveRepository(entity, baseRepository);
       const value: unknown = Reflect.get(effective, property, effective);
       if (typeof value != "function") return value;

@@ -1,3 +1,5 @@
+import { InvalidForeignKeyDefinitionError } from "../errors/foreign-key.error.js";
+
 export type FieldType = "string" | "number" | "boolean" | "date";
 export type IndexOrder = "ASC" | "DESC";
 export type IndexScalar = string | number | boolean | Date | null;
@@ -20,11 +22,24 @@ export interface SecondaryIndexDefinition {
   readonly field?: string;
 }
 
+export type ReferentialAction = "RESTRICT" | "CASCADE" | "SET_NULL";
+
+export interface ForeignKeyDefinition {
+  readonly name: string;
+  readonly field: string;
+  readonly references: {
+    readonly collection: string;
+    readonly field: "$id";
+  };
+  readonly onDelete: ReferentialAction;
+}
+
 export interface CollectionDefinition {
   readonly name: string;
   readonly fields?: Readonly<Record<string, FieldDefinition>>;
   readonly allowAdditionalFields?: boolean;
   readonly indexes: readonly SecondaryIndexDefinition[];
+  readonly foreignKeys?: readonly ForeignKeyDefinition[];
 }
 
 export type DocumentRecord = Record<string, unknown>;
@@ -65,15 +80,49 @@ export function normalizeCollection(schema: CollectionDefinition): CollectionDef
       )
     : undefined;
 
+  const foreignKeys = [...(schema.foreignKeys ?? [])]
+    .sort((left, right) => left.name.localeCompare(right.name))
+    .map((foreignKey) => ({
+      name: foreignKey.name,
+      field: foreignKey.field,
+      references: {
+        collection: foreignKey.references.collection,
+        field: "$id" as const,
+      },
+      onDelete: foreignKey.onDelete,
+    }));
+
+  const indexes = schema.indexes.map((index) => ({
+    name: index.name,
+    unique: index.unique,
+    fields: indexFields(index).map((part) => ({ field: part.field, order: part.order })),
+  }));
+
+  // Every foreign key has a deterministic B+tree access path. Existing single-field
+  // indexes (including unique OneToOne indexes) are reused; otherwise one is created.
+  for (const foreignKey of foreignKeys) {
+    if (
+      indexes.some(
+        (index) => index.fields.length == 1 && index.fields[0]!.field == foreignKey.field,
+      )
+    )
+      continue;
+    const name = `fk_${foreignKey.name}`;
+    const collision = indexes.find((index) => index.name == name);
+    if (collision) throw new Error(`Foreign-key index name collision: ${schema.name}/${name}`);
+    indexes.push({
+      name,
+      unique: false,
+      fields: [{ field: foreignKey.field, order: "ASC" }],
+    });
+  }
+
   return {
     name: schema.name,
     ...(fields == null ? {} : { fields }),
     allowAdditionalFields: schema.allowAdditionalFields ?? true,
-    indexes: schema.indexes.map((index) => ({
-      name: index.name,
-      unique: index.unique,
-      fields: indexFields(index).map((part) => ({ field: part.field, order: part.order })),
-    })),
+    indexes,
+    ...(foreignKeys.length == 0 ? {} : { foreignKeys }),
   };
 }
 
@@ -133,6 +182,54 @@ export function validateCollection(schema: CollectionDefinition): void {
       if (fields && !Object.hasOwn(fields, part.field))
         throw new Error(`Unknown indexed field: ${part.field}`);
     }
+  }
+
+  if (schema.foreignKeys != null && !Array.isArray(schema.foreignKeys))
+    throw new InvalidForeignKeyDefinitionError("Foreign keys must be an array");
+
+  const foreignKeyNames = new Set<string>();
+  const foreignKeyFields = new Set<string>();
+
+  for (const foreignKey of schema.foreignKeys ?? []) {
+    if (
+      !foreignKey ||
+      !isValidSchemaName(foreignKey.name) ||
+      foreignKey.name.length > 61 ||
+      !isValidSchemaName(foreignKey.field) ||
+      !foreignKey.references ||
+      !isValidSchemaName(foreignKey.references.collection) ||
+      foreignKey.references.field != "$id" ||
+      !["RESTRICT", "CASCADE", "SET_NULL"].includes(foreignKey.onDelete)
+    )
+      throw new InvalidForeignKeyDefinitionError(
+        `Invalid foreign key definition: ${foreignKey?.name ?? "unknown"}`,
+      );
+
+    if (foreignKeyNames.has(foreignKey.name))
+      throw new InvalidForeignKeyDefinitionError(`Duplicate foreign key: ${foreignKey.name}`);
+
+    if (foreignKeyFields.has(foreignKey.field))
+      throw new InvalidForeignKeyDefinitionError(
+        `Duplicate foreign key field: ${foreignKey.field}`,
+      );
+
+    foreignKeyNames.add(foreignKey.name);
+    foreignKeyFields.add(foreignKey.field);
+
+    const definition = fields?.[foreignKey.field];
+
+    if (!definition)
+      throw new InvalidForeignKeyDefinitionError(`Unknown foreign key field: ${foreignKey.field}`);
+
+    if (definition.type != "string")
+      throw new InvalidForeignKeyDefinitionError(
+        `Foreign key ${foreignKey.name} must use a string field`,
+      );
+
+    if (foreignKey.onDelete == "SET_NULL" && !definition.nullable)
+      throw new InvalidForeignKeyDefinitionError(
+        `SET_NULL foreign key ${foreignKey.name} must be nullable`,
+      );
   }
 }
 

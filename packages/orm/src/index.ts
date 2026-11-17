@@ -2,6 +2,14 @@ export { Entity } from "./decorators/entity.decorator.js";
 export { Column } from "./decorators/column.decorator.js";
 export { PrimaryKey } from "./decorators/primary-key.decorator.js";
 export { Index } from "./decorators/index.decorator.js";
+export {
+  OneToMany,
+  ManyToOne,
+  OneToOne,
+  ManyToMany,
+  JoinTable,
+} from "./decorators/relation.decorators.js";
+export type { OwningRelationOptions, JoinTableOptions } from "./decorators/relation.decorators.js";
 export type {
   PropertyIndexOptions,
   CompositeIndexField,
@@ -24,6 +32,9 @@ export type {
   ColumnMetadata,
   IndexMetadata,
   IndexFieldMetadata,
+  RelationKind,
+  RelationMetadata,
+  JoinTableMetadata,
 } from "./metadata/entity-metadata.js";
 
 export { EntityMapper } from "./mapping/entity-mapper.js";
@@ -32,7 +43,9 @@ export { ValueTransformer } from "./mapping/value-transformer.js";
 export { SchemaManager } from "./schema/schema-manager.js";
 export type { SchemaMode } from "./schema/schema-manager.js";
 
-export type { FindOptions, FindPage, SortDirection } from "./query/find-options.js";
+export type { FindOptions, FindPage, SortDirection, Relations } from "./query/find-options.js";
+export { RelationLoader } from "./relations/relation-loader.js";
+export { RelationOperations } from "./relations/relation-operations.js";
 export type {
   Where,
   WhereOperator,
