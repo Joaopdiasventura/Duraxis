@@ -1,5 +1,11 @@
 # @duraxis/nestjs changelog
 
+## 0.2.2
+
+### Patch Changes
+
+- c8d2a63: adjust the release version
+
 ## 0.2.1
 
 ### Patch Changes
