@@ -1,5 +1,13 @@
 # @duraxis/orm changelog
 
+## 0.2.1
+
+### Patch Changes
+
+- e6facc7: fix: padronize the published versions
+- Updated dependencies [e6facc7]
+  - @duraxis/core@0.2.1
+
 ## 0.2.0
 
 ### Minor Changes

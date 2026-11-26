@@ -1,5 +1,13 @@
 # @duraxis/storage-memory changelog
 
+## 0.1.2
+
+### Patch Changes
+
+- e6facc7: fix: padronize the published versions
+- Updated dependencies [e6facc7]
+  - @duraxis/storage@0.1.1
+
 ## 0.1.1
 
 ### Patch Changes

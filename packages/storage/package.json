@@ -1,6 +1,6 @@
 {
   "name": "@duraxis/storage",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Storage contracts, result types, errors, and key validation for Duraxis.",
   "license": "ISC",
   "author": "João Paulo Dias <joaopdias.dev@gmail.com>",
