@@ -1,5 +1,18 @@
 # @duraxis/nestjs changelog
 
+## 0.2.4
+
+### Patch Changes
+
+- 8c357b5: fix: padronize the published versions
+- 8c357b5: adjust the release version
+- 8c357b5: fix: padronize the published versions
+- Updated dependencies [8c357b5]
+- Updated dependencies [8c357b5]
+  - @duraxis/core@0.2.2
+  - @duraxis/orm@0.2.2
+  - @duraxis/storage@0.1.2
+
 ## 0.2.3
 
 ### Patch Changes
