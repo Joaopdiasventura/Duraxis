@@ -1,5 +1,15 @@
 # @duraxis/core changelog
 
+## 0.2.2
+
+### Patch Changes
+
+- 8c357b5: fix: padronize the published versions
+- 8c357b5: fix: padronize the published versions
+- Updated dependencies [8c357b5]
+- Updated dependencies [8c357b5]
+  - @duraxis/storage@0.1.2
+
 ## 0.2.1
 
 ### Patch Changes
