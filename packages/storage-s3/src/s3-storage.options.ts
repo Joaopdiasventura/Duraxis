@@ -3,7 +3,7 @@ export interface S3StorageDriverOptions {
   readonly prefix?: string;
   readonly maxObjectBytes?: number;
   readonly maxPendingOperations?: number;
-  
+
   readonly client?: {
     readonly region?: string;
     readonly endpoint?: string;

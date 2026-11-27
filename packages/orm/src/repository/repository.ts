@@ -275,7 +275,7 @@ export class Repository<TEntity extends object> {
     } finally {
       memory.close();
     }
-    
+
     return rows;
   }
 

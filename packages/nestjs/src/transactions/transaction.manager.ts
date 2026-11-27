@@ -294,7 +294,7 @@ export class TransactionManager {
         };
 
         manager.signal?.addEventListener("abort", abort, { once: true });
-        
+
         const context: TransactionExecutionContext = {
           physical,
           readOnly: options.readOnly ?? false,

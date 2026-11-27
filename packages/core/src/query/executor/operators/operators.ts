@@ -455,7 +455,7 @@ export class Difference extends SetOperator {
         if (excluded.size >= this.maxSetEntries) throw new QueryMemoryLimitError();
 
         bytes += row.id.length * 2 + 48;
-        
+
         memory.resize({ workingBytes: bytes });
         excluded.add(row.id);
       }

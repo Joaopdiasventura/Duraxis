@@ -42,7 +42,7 @@ export class RelationLoader<TEntity extends object> {
         new Set(),
         state,
       );
-      
+
       return entities;
     } finally {
       state.budget.close();

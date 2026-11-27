@@ -618,7 +618,7 @@ export class DirectoryOwnership {
       try {
         if (parseOwner(observed.bytes).ownerId != this.#ownerId)
           throw ownershipConflict("Storage ownership changed");
-        
+
         await assertObservedUnchanged(observed);
       } finally {
         await observed.handle.close();

@@ -99,7 +99,7 @@ export class QueryContext {
     durationMs: 0,
   };
   private snapshotValue?: Snapshot;
-  
+
   public get snapshot(): Snapshot {
     this.assertActive();
     return this.snapshotValue!;

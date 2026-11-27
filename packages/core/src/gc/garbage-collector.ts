@@ -223,7 +223,7 @@ export class GarbageCollector {
             failed++;
             if (!options.continueOnError) throw error;
           }
-          
+
           if ((position + 1) % batchSize == 0)
             await new Promise<void>((resolve) => setImmediate(resolve));
         }

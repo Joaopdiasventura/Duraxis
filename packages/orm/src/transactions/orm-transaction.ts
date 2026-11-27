@@ -9,7 +9,7 @@ export class OrmTransactionManager implements TransactionContext {
   readonly #repositories = new Map<Function, unknown>();
   #active = true;
   readonly #abort = () => this.close();
-  
+
   public get signal(): AbortSignal {
     return this.transaction.signal;
   }

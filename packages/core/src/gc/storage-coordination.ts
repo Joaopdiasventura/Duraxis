@@ -27,7 +27,7 @@ export async function coordinateCommit<T>(
   action: () => Promise<T>,
 ): Promise<T> {
   let state = commits.get(storage);
-  
+
   if (!state) {
     state = { tail: Promise.resolve(), queued: 0 };
     commits.set(storage, state);
@@ -38,7 +38,7 @@ export async function coordinateCommit<T>(
   state.queued++;
   const previous = state.tail;
   let release!: () => void;
-  
+
   state.tail = new Promise<void>((resolve) => {
     release = resolve;
   });
