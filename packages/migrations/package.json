@@ -1,0 +1,63 @@
+{
+  "name": "@duraxis/migrations",
+  "version": "0.1.0",
+  "description": "Transactional schema migrations for Duraxis.",
+  "license": "ISC",
+  "author": "Jo\u00e3o Paulo Dias <joaopdias.dev@gmail.com>",
+  "keywords": [
+    "duraxis",
+    "database",
+    "embedded",
+    "transactions",
+    "typescript"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Joaopdiasventura/Duraxis.git",
+    "directory": "packages/migrations"
+  },
+  "homepage": "https://github.com/Joaopdiasventura/Duraxis/tree/main/packages/migrations#readme",
+  "bugs": {
+    "url": "https://github.com/Joaopdiasventura/Duraxis/issues"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "vite build && tsc -p tsconfig.build.json",
+    "dev": "vite build --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepack": "pnpm build"
+  },
+  "dependencies": {
+    "@duraxis/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@duraxis/storage-memory": "workspace:*",
+    "@duraxis/storage-disk": "workspace:*"
+  }
+}

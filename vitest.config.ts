@@ -10,6 +10,8 @@ export default defineConfig({
       "./packages/core/vitest.config.ts",
       "./packages/orm/vitest.config.ts",
       "./packages/nestjs/vitest.config.ts",
+      "./packages/migrations/vitest.config.ts",
+      "./packages/cli/vitest.config.ts",
     ],
 
     coverage: {

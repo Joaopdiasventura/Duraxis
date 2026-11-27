@@ -16,6 +16,8 @@ const packageOrder = [
   "core",
   "orm",
   "nestjs",
+  "migrations",
+  "cli",
 ];
 const privatePackage = "storage-testkit";
 const expectedAuthor = "João Paulo Dias <joaopdias.dev@gmail.com>";
@@ -117,6 +119,8 @@ function validateManifests() {
     );
   }
 
+  assert.deepEqual(packages.get("cli").bin, { duraxis: "./dist/bin.js" });
+  assert.equal(packages.get("migrations").dependencies["@duraxis/core"], "workspace:*");
   assert.equal(packages.get("storage").sideEffects, false);
   assert.equal(packages.get("storage-memory").sideEffects, false);
   assert.equal(packages.get("storage-disk").sideEffects, false);
@@ -214,6 +218,14 @@ async function inspectTarball(directory, tarball, extractionRoot) {
     );
   }
 
+  if (directory == "cli") {
+    assert.ok(
+      (await readFile(join(packageRoot, "dist/bin.js"), "utf8")).startsWith(
+        "#!/usr/bin/env node\n",
+      ),
+    );
+    assert.ok(existsSync(join(packageRoot, "dist/ts-loader.mjs")));
+  }
   const packedFiles = await readdir(packageRoot, { recursive: true });
   for (const file of packedFiles) {
     const normalized = String(file).replaceAll("\\", "/");
@@ -353,7 +365,12 @@ void DuraxisModule;
   run("node", [join(root, "node_modules", "typescript", "bin", "tsc"), "-p", "tsconfig.json"], {
     cwd: consumer,
   });
-  console.log("✓ external ESM, CommonJS, and TypeScript consumption passed");
+  await writeFile(
+    join(consumer, "migration-smoke.mjs"),
+    await readFile(join(root, "scripts/fixtures/migration-smoke.mjs"), "utf8"),
+  );
+  run("node", ["migration-smoke.mjs"], { cwd: consumer });
+  console.log("✓ external ESM, CommonJS, TypeScript, and packed CLI migration lifecycle passed");
 }
 
 async function validatePack() {

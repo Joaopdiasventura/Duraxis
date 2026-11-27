@@ -1,5 +1,7 @@
+import { prefixSuccessor } from "../indexes/index-key.js";
 import type { StorageDriver } from "@duraxis/storage";
 import {
+  RECORD_PREFIX,
   decodeDocument,
   encodeDocument,
   fieldDefinition,
@@ -212,7 +214,13 @@ export class ForeignKeyManager {
     const result = new Set<string>();
     const previousSchema = snapshot.manifest.catalog.get(relation.collection);
 
-    if (previousSchema?.indexes.some((index) => index.name == relation.index))
+    const previousIndex = previousSchema?.indexes.find((index) => index.name == relation.index);
+    const compatible =
+      previousIndex &&
+      indexFields(previousIndex).length == 1 &&
+      indexFields(previousIndex)[0]!.field == relation.foreignKey.field;
+
+    if (compatible)
       for await (const entry of this.#secondary.scanIds(
         snapshot.manifest,
         relation.collection,
@@ -220,6 +228,24 @@ export class ForeignKeyManager {
         { eq: parentId },
       ))
         result.add(entry.id);
+
+    if (!compatible) {
+      const prefix = new TextEncoder().encode(`${RECORD_PREFIX}${relation.collection}/`);
+      const end = prefixSuccessor(prefix);
+
+      for await (const entry of this.#primary.scanReferences(snapshot.manifest.primaryRoot, {
+        gte: prefix,
+        ...(end ? { lt: end } : {}),
+      })) {
+        const parsed = parseRecordKey(entry.key)!;
+
+        if (
+          decodeDocument(await this.#primary.readObject(entry.ref))[relation.foreignKey.field] ===
+          parentId
+        )
+          result.add(parsed.id);
+      }
+    }
 
     for (const [key, operation] of writes) {
       const parsed = parseRecordKey(key);

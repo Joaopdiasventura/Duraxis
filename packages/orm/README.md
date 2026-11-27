@@ -56,3 +56,17 @@ O ORM exige inicialização antes de obter repositórios. O modo `create` cria e
 ausentes, mas não é uma ferramenta geral de migrações destrutivas; `validate` verifica o schema
 existente. Decorators registram metadados quando a classe é avaliada, por isso este pacote não é
 marcado como livre de efeitos colaterais. Requer Node.js 22.12+.
+
+## Schema export and migrations
+
+`exportSchema(entities)` returns deterministic normalized Core collection
+definitions without opening a database. It reuses finalized decorator metadata,
+including inherited fields, junction collections, foreign keys, and supporting
+indexes. Use this API with `@duraxis/migrations` schema comparison, or use
+[`@duraxis/cli`](../cli/README.md) for snapshot-based generation.
+
+The opt-in `schema: { mode: "validate-managed" }` also rejects unexpected indexes
+on registered entity/junction collections. Unrelated collections remain allowed.
+Existing `create` and `validate` modes preserve their behavior and declaration
+order. Production can run `duraxis migrate:up` before ORM initialization with
+schema validation; startup does not automatically execute migrations.

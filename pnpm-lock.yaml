@@ -188,12 +188,47 @@ importers:
         specifier: ^5.1.0
         version: 5.1.0(@types/node@26.6.6)(@vitest/coverage-v8@5.1.0)(vite@8.3.5(@types/node@26.6.6)(yaml@2.9.1))
 
+  packages/cli:
+    dependencies:
+      '@duraxis/core':
+        specifier: workspace:*
+        version: link:../core
+      '@duraxis/migrations':
+        specifier: workspace:*
+        version: link:../migrations
+      '@duraxis/orm':
+        specifier: workspace:*
+        version: link:../orm
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+    devDependencies:
+      '@duraxis/storage-disk':
+        specifier: workspace:*
+        version: link:../storage-disk
+      '@duraxis/storage-memory':
+        specifier: workspace:*
+        version: link:../storage-memory
+
   packages/core:
     dependencies:
       '@duraxis/storage':
         specifier: workspace:*
         version: link:../storage
     devDependencies:
+      '@duraxis/storage-memory':
+        specifier: workspace:*
+        version: link:../storage-memory
+
+  packages/migrations:
+    dependencies:
+      '@duraxis/core':
+        specifier: workspace:*
+        version: link:../core
+    devDependencies:
+      '@duraxis/storage-disk':
+        specifier: workspace:*
+        version: link:../storage-disk
       '@duraxis/storage-memory':
         specifier: workspace:*
         version: link:../storage-memory
@@ -285,6 +320,9 @@ importers:
       '@duraxis/core':
         specifier: workspace:*
         version: link:../core
+      '@duraxis/migrations':
+        specifier: workspace:*
+        version: link:../migrations
       '@duraxis/nestjs':
         specifier: workspace:*
         version: link:../nestjs
@@ -1128,6 +1166,11 @@ packages:
 
   tslib@2.9.1:
     resolution: {integrity: sha512-a4Ux9VKuIMHsOS7ENbEq6hK2ZGYIT27Rtl0E4eD9KqwxhKiQeMZE/9xb3IdYwWaSOyIBQLExhQgXDTYoiCxnWA==}
+
+  typescript@5.9.3:
+    resolution: {integrity: sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw==}
+    engines: {node: '>=14.17'}
+    hasBin: true
 
   typescript@7.0.2:
     resolution: {integrity: sha512-8FYau96o3NKOhbjKi/qNvG/W5jhzxkbdm5sj9AbZ/5T5sWqn3hJgLfGx27sRKZWTvyzCP8dLRBTf5tBTSRVUNA==}
@@ -2009,6 +2052,8 @@ snapshots:
   tslib@2.8.1: {}
 
   tslib@2.9.1: {}
+
+  typescript@5.9.3: {}
 
   typescript@7.0.2:
     optionalDependencies:
