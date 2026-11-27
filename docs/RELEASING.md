@@ -127,7 +127,9 @@ Esse procedimento é excepcional. Releases seguintes devem ocorrer pelo workflow
 
 `@duraxis/migrations` and `@duraxis/cli` participate in workspace builds, Changesets,
 manifest/artifact validation, and tarball consumption checks. The CLI ships an ESM
-`duraxis` executable and TypeScript loader alongside ESM/CommonJS library exports.
+`duraxis` executable with an early runtime gate; synchronous TypeScript hooks are
+bundled into the ESM library; the CommonJS entry uses Node 24 require(ESM) to
+share the same API and hook state.
 TypeScript 5.9.3 is a pinned **runtime** dependency of the CLI's artifact identity
 and decorator loader; do not move it to devDependencies or silently upgrade it.
 
@@ -135,9 +137,25 @@ and decorator loader; do not move it to devDependencies or silently upgrade it.
 decorated TypeScript entities and disk-backed migrations, then compiles the same
 artifacts to ESM JavaScript and checks that applied identities still match. It also
 checks the installed executable, snapshots, validation, rollback, and data retention.
-No package is published by these checks. CI/release workflows already run this
+No package is published by these checks. CI/release workflows run this
 command, so their dependency order includes both new packages automatically.
 
 Migration-enabled databases require the new Core for reserved metadata entries in
 full-tree operations; describe this restriction in release notes and do not
 downgrade Core after adoption. Existing format-1 databases need no conversion.
+
+## Node.js baseline
+
+All packages require Node.js >=24.15.0. CI and release setup-node steps read
+`.node-version`; `.nvmrc` matches it. Use `nvm install && nvm use` before installing.
+The workspace's `devEngines.runtime` and pnpm `engineStrict` reject unsupported
+runtimes, and the executable checks its runtime before dynamically importing the
+CLI. The separate `runtime.mjs` gate must ship in tarballs; the obsolete
+`ts-loader.mjs` must not. TypeScript hooks are bundled into the library.
+
+Raising this requirement is a breaking pre-1.0 minor release for all public
+packages, covered by Changesets. Keep the compiler identity settings and runtime
+TypeScript 5.9.3 pinned even when upgrading the workspace's native compiler.
+Node 24 type definitions and ES2022 TypeScript output prevent relying on Node
+25/26 APIs. Module-loading regression jobs cover Linux and Windows on 24.15.0;
+the packed consumer checks both programmatic exports and installed CLI commands.

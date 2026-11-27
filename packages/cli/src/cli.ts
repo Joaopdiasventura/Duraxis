@@ -218,16 +218,16 @@ export async function runCLI(args: readonly string[], io: CLIIO = {}): Promise<n
         const { readdir } = await import("node:fs/promises");
 
         const files = (await readdir(directory))
-          .filter((file) => /\.(ts|js|mjs)$/.test(file) && !file.endsWith(".d.ts"))
+          .filter((file) => /\.(ts|mts|js|mjs)$/.test(file) && !/\.d\.(?:ts|mts)$/.test(file))
           .sort();
 
         const latest = files.at(-1);
 
         if (!latest) throw new Error("No manual migration found");
 
-        const id = latest.replace(/\.(ts|js|mjs)$/, "");
+        const id = latest.replace(/\.(ts|mts|js|mjs)$/, "");
 
-        const parent = files.at(-2)?.replace(/\.(ts|js|mjs)$/, "") ?? null;
+        const parent = files.at(-2)?.replace(/\.(ts|mts|js|mjs)$/, "") ?? null;
 
         if (parent) {
           const previous = await readJSON<SchemaSnapshot>(join(snapshots, `${parent}.json`));
@@ -361,7 +361,7 @@ export async function runCLI(args: readonly string[], io: CLIIO = {}): Promise<n
 
         const latestFile = local.files.at(-1);
 
-        const latest = latestFile?.replace(/\.(ts|js|mjs)$/, "");
+        const latest = latestFile?.replace(/\.(ts|mts|js|mjs)$/, "");
 
         if (!latest) throw new Error("No local migration to remove");
 

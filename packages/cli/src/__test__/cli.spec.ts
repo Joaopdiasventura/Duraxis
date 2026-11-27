@@ -1,7 +1,16 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import {
+  mkdtemp,
+  mkdir,
+  readFile,
+  readdir,
+  rm,
+  rename,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import ts from "typescript";
@@ -24,7 +33,7 @@ async function setup() {
     await symlink(
       resolve(import.meta.dirname, "../../../", name),
       join(root, "node_modules/@duraxis", name),
-      "dir",
+      process.platform == "win32" ? "junction" : "dir",
     );
   await writeFile(join(root, "package.json"), '{"type":"module"}');
   await cli(root, "init");
@@ -121,12 +130,24 @@ describe("CLI", () => {
     );
     await expect(cli(root, "migrate:status", "--database", "missing", "--json")).rejects.toThrow();
   });
+  it("discovers and executes ESM .mts migrations", async () => {
+    const root = await setup();
+    await cli(root, "migration:generate", "initial");
+    const directory = join(root, "duraxis/migrations");
+    const file = (await readdir(directory)).find((file) => file.endsWith(".ts"))!;
+    await rename(join(directory, file), join(directory, file.replace(/\.ts$/, ".mts")));
+    expect((await cli(root, "migrate:up")).stdout).toContain("Applied 1");
+    expect((await cli(root, "migrate:status")).stdout).toContain("1 applied");
+  });
   it("uses the same normalized identity for TypeScript and emitted ESM JavaScript", () => {
     const source =
       'import { defineMigration } from "@duraxis/migrations";\nexport default defineMigration({ id: "20261127110000000_initial", async up(context: unknown) { throw new Error("manual"); } });';
     const emitted = ts.transpileModule(source, {
       compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
     }).outputText;
+    expect(artifactChecksum(source)).toBe(
+      "sha256:a2887847a8027aa97d226b8c622592ef88aa41e683d8f3729760db36fc858cb5",
+    );
     expect(artifactChecksum(source)).toBe(artifactChecksum(emitted));
     expect(artifactChecksum(source.replace('"manual"', '"changed"'))).not.toBe(
       artifactChecksum(source),

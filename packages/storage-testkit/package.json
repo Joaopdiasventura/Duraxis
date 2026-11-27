@@ -11,5 +11,8 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=24.15.0"
   }
 }

@@ -1,5 +1,6 @@
 import { access, readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
+import { initializeTypeScriptLoader } from "./typescript-loader.js";
 import { pathToFileURL } from "node:url";
 import type { DuraxisDatabase } from "@duraxis/core";
 import type { EntityClass } from "@duraxis/orm";
@@ -23,8 +24,10 @@ export function defineDuraxisConfig<const T extends DuraxisConfig>(config: T): T
   return config;
 }
 
-export async function importFile(path: string): Promise<unknown> {
-  return import(pathToFileURL(path).href);
+export async function importFile(path: string | URL): Promise<unknown> {
+  const url = path instanceof URL ? path : pathToFileURL(path);
+  initializeTypeScriptLoader(url);
+  return import(url.href);
 }
 
 export async function loadConfig(
@@ -39,7 +42,14 @@ export async function loadConfig(
     let directory = resolve(cwd);
 
     while (true) {
-      for (const name of ["duraxis.config.ts", "duraxis.config.js", "duraxis.config.mjs"]) {
+      for (const name of [
+        "duraxis.config.ts",
+        "duraxis.config.mts",
+        "duraxis.config.js",
+        "duraxis.config.mjs",
+        "duraxis.config.cts",
+        "duraxis.config.cjs",
+      ]) {
         const candidate = resolve(directory, name);
 
         try {

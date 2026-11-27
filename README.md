@@ -26,10 +26,34 @@ As dependências de execução seguem a direção `storage → drivers/core → 
 
 ## Requisitos
 
-- Node.js 22.12 ou mais recente;
+- Node.js 24.15.0 ou mais recente;
 - pnpm 12.16.1 ou mais recente para desenvolver no monorepo;
 - TypeScript com `experimentalDecorators` e `emitDecoratorMetadata` ao usar ORM/NestJS;
 - NestJS 10 ou 11 para `@duraxis/nestjs`.
+
+## Runtime de desenvolvimento
+
+Node.js 24.15.0 or newer is required. O desenvolvimento e a CI usam exatamente
+24.15.0, definido em `.nvmrc` e `.node-version`:
+
+```bash
+nvm install
+nvm use
+node --version # v24.15.0
+pnpm install --frozen-lockfile
+```
+
+`engineStrict: true` em `pnpm-workspace.yaml` e `devEngines.runtime` rejeitam runtimes
+não suportados. A CLI também verifica a versão antes de carregar suas APIs modernas.
+O build mantém ES2022 como alvo TypeScript; os tipos Node são da linha 24.
+O compilador nativo TypeScript 7 serve ao workspace. A CLI mantém TypeScript 5.9.3
+como dependência de produção para transpilação de decorators e identidade estável
+de migrações; essa separação é intencional.
+
+A CLI carrega configurações, entidades com decorators legados e migrações TypeScript
+internamente, sem flags experimentais nem instalação de outro transpiler.
+Imports locais NodeNext como `./entities.js` resolvem `entities.ts` quando o
+JavaScript não existe. Consulte os [formatos e limites do loader](packages/cli/README.md#configuration-and-loading).
 
 ## Instalação
 

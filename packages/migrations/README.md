@@ -1,6 +1,6 @@
 # @duraxis/migrations
 
-Transactional schema evolution for Duraxis. Requires Node.js 22.12 or later.
+Transactional schema evolution for Duraxis. Requires Node.js 24.15.0 or later.
 The engine depends only on `@duraxis/core`; it does not load files, ORM entities,
 NestJS, or concrete storage drivers. Use `@duraxis/cli` for project tooling.
 

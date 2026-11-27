@@ -55,7 +55,7 @@ await orm.close();
 O ORM exige inicialização antes de obter repositórios. O modo `create` cria estruturas
 ausentes, mas não é uma ferramenta geral de migrações destrutivas; `validate` verifica o schema
 existente. Decorators registram metadados quando a classe é avaliada, por isso este pacote não é
-marcado como livre de efeitos colaterais. Requer Node.js 22.12+.
+marcado como livre de efeitos colaterais. Requer Node.js 24.15.0+.
 
 ## Schema export and migrations
 

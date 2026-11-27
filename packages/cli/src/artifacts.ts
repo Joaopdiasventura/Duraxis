@@ -63,7 +63,7 @@ export async function loadArtifacts(
     }
 
   const files = (await readdir(directory))
-    .filter((file) => /\.(ts|js|mjs)$/.test(file) && !file.endsWith(".d.ts"))
+    .filter((file) => /\.(ts|mts|js|mjs)$/.test(file) && !/\.d\.(?:ts|mts)$/.test(file))
     .sort();
 
   const artifacts: MigrationArtifact[] = [];
@@ -71,7 +71,7 @@ export async function loadArtifacts(
   const ids = new Set<string>();
 
   for (const file of files) {
-    const id = file.replace(/\.(ts|js|mjs)$/, "");
+    const id = file.replace(/\.(ts|mts|js|mjs)$/, "");
 
     validateMigrationId(id);
 

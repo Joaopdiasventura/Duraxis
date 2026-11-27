@@ -143,7 +143,7 @@ Veja a [decisão de arquitetura](../../docs/NESTJS_TRANSACTIONS.md) para a anál
 
 Transações declarativas dependem de metadados e inicialização do Nest; o pacote não é marcado
 como livre de efeitos colaterais. Ele não adiciona coordenação distribuída. Requer Node.js
-22.12+.
+24.15.0+.
 
 ## Migration deployment
 

@@ -2,12 +2,14 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { readFile, readdir, rename, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { verifyTypeScriptLoader } from "./typescript-loader-smoke.mjs";
 import { createRequire } from "node:module";
 import { DuraxisDatabase } from "@duraxis/core";
 import { AsyncDiskStorageDriver } from "@duraxis/storage-disk";
 
-const bin = resolve("node_modules/.bin/duraxis");
-const cli = (...args) => execFileSync(bin, args, { encoding: "utf8" });
+const bin = resolve("node_modules/@duraxis/cli/dist/bin.js");
+const cli = (...args) => execFileSync(process.execPath, [bin, ...args], { encoding: "utf8" });
+await verifyTypeScriptLoader(import.meta.resolve("@duraxis/cli"), process.cwd());
 assert.match(cli("--help"), /migration:generate/);
 cli("init");
 const entity = `import { Entity, Column, PrimaryKey } from "@duraxis/orm";
@@ -46,6 +48,8 @@ cli("migrate:up");
 assert.equal(JSON.parse(cli("migrate:status", "--json")).applied.length, 2);
 cli("migrate:check");
 cli("migrate:check", "--offline");
+const programmatic = createRequire(import.meta.resolve("@duraxis/cli"))("@duraxis/cli");
+assert.equal(await programmatic.runCLI(["migrate:check"], { cwd: process.cwd(), out() {} }), 0);
 // Switch migration artifacts, config, and decorated entities to compiled ESM.
 const requireCLI = createRequire(import.meta.resolve("@duraxis/cli"));
 const ts = requireCLI("typescript");

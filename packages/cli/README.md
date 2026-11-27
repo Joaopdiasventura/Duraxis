@@ -1,6 +1,6 @@
 # @duraxis/cli
 
-Standalone Duraxis migration tooling for Node.js 22.12+. The CLI builds on
+Standalone Duraxis migration tooling. Node.js 24.15.0 or newer is required. The CLI builds on
 `@duraxis/migrations` and the ORM's database-independent schema exporter.
 
 ## Quick start
@@ -64,7 +64,8 @@ before using `pnpm exec duraxis`.
 ## Configuration and loading
 
 Discovery walks from the working directory upward for `duraxis.config.ts`,
-`duraxis.config.js`, or `duraxis.config.mjs`. `--config <path>` overrides discovery.
+`duraxis.config.mts`, `duraxis.config.js`, `duraxis.config.mjs`,
+`duraxis.config.cts`, or `duraxis.config.cjs`. `--config <path>` overrides discovery.
 Migration and snapshot directories resolve relative to the config file. Paths
 inside your database factory are your responsibility; use `import.meta.url` as
 above instead of depending on the command's working directory.
@@ -80,14 +81,55 @@ that database and storage in a `finally` block. Factories must clean up resource
 if they fail before returning. Do not pass an application-owned connection to
 this CLI API; use the programmatic runner for that scenario.
 
-The packaged loader compiles `.ts` modules using pinned TypeScript 5.9.3, ES2022
-ESM, legacy decorators, and decorator metadata. It resolves relative `.js`
-imports to `.ts` when JavaScript is absent. Native Node type stripping alone is
-not used. Explicit `.ts` extensions also work. Entity columns should declare their
-Core `type` explicitly. Config files and migrations are trusted executable code:
-keep their module initialization free of database writes and external side effects.
-TypeScript path aliases, CommonJS migration files, and custom compiler plugins
-are not supported. Use relative ESM imports and normal package imports.
+Duraxis registers synchronous Node.js `registerHooks()` before loading a config,
+entity, or migration, including programmatic `loadConfig()` calls. No manual
+loader registration, experimental Node flags, or extra runtime transpiler is
+required. Native type stripping alone cannot implement legacy decorators.
+
+Supported configuration formats are `.ts`, `.mts`, `.js`, `.mjs`, `.cts`, and
+`.cjs`. Discovery checks those extensions in that order. `.ts` and `.mts` source
+modules execute as ESM; `.cts` uses CommonJS. JavaScript keeps Node's ordinary
+package/module semantics. Executable migration artifacts support ESM `.ts`,
+`.mts`, `.js`, and `.mjs`; CommonJS migration artifacts are unsupported because
+their executable form does not share the ESM checksum identity contract.
+
+Standard Node resolution runs first. Only missing local relative/file-URL imports
+in module graphs loaded by Duraxis receive source-extension fallbacks:
+`.js` → `.ts`, `.mjs` → `.mts`, `.cjs` → `.cts`. Existing JavaScript wins. Bare
+packages, package exports, built-ins, and dependencies under `node_modules` are
+left to Node. Missing dependencies and execution errors propagate without retrying
+another source module. Direct TypeScript imports, nested and dynamic imports,
+file URLs, spaces, and Unicode filesystem names work through the same path.
+
+The production dependency TypeScript 5.9.3 transpiles source with ES2022 output,
+`experimentalDecorators: true`, `emitDecoratorMetadata: true`, and
+`useDefineForClassFields: false`. Reflective metadata consumers must load their
+usual `reflect-metadata` dependency before decorated modules. Entity columns
+should declare their Core `type` explicitly. `tsconfig.json` path aliases,
+custom compiler plugins, `.tsx`/`.jsx`, and TypeScript package sources inside
+`node_modules` are not supported. Use relative imports or published package exports.
+When using a CommonJS config, load decorated entities and Duraxis connections
+from ESM with native dynamic imports. Mixing independent ESM and CommonJS copies
+of ORM decorators/Core constructors is unsupported; the CLI executes as ESM.
+Config files and migrations are trusted executable code; keep module initialization
+free of database writes and external side effects.
+
+Programmatic use needs no executable bootstrap:
+
+```ts
+import { loadConfig, disposeTypeScriptLoader } from "@duraxis/cli";
+const { config } = await loadConfig(process.cwd());
+// Use config and its asynchronous entity/migration callbacks here.
+disposeTypeScriptLoader();
+```
+
+A library instance registers one hook pair, reuses it for repeated calls, and
+tracks only explicitly loaded local module graphs. Hooks stay active for later
+dynamic imports from those graphs. Call `disposeTypeScriptLoader()` when callbacks
+no longer need them; it deregisters the hooks. Later loads initialize a new pair.
+Graph tracking and Node's module cache remain in effect so cached callbacks keep
+working after reinitialization. This is not a watch-mode/hot-reload facility. The CommonJS entry uses Node 24 require(ESM),
+so both programmatic exports share the same implementation and hook state.
 
 Local generation, local diff, offline check, and dry-run never call the database
 factory. Other commands open the configured database. Disk requires exclusive

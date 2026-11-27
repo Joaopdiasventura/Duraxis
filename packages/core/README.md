@@ -49,7 +49,7 @@ O pacote depende somente de `@duraxis/storage` em runtime. Drivers são instalad
 separadamente. `@duraxis/orm` adiciona entidades e repositórios sobre esta API.
 
 Duraxis ainda está em `0.x`. As garantias efetivas dependem do driver; não há coordenação
-distribuída, e o formato persistido pode evoluir. Requer Node.js 22.12+.
+distribuída, e o formato persistido pode evoluir. Requer Node.js 24.15.0+.
 
 ## Transactional schema evolution
 

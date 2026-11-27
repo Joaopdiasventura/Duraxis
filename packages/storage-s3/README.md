@@ -1,7 +1,7 @@
 # @duraxis/storage-s3
 
 Amazon S3 storage for Duraxis, with an internally managed AWS SDK v3 client. Applications only
-import Duraxis APIs. Requires Node.js 22.12+ and a pre-existing general-purpose S3 bucket.
+import Duraxis APIs. Requires Node.js 24.15.0+ and a pre-existing general-purpose S3 bucket.
 No network requests occur in the constructor.
 
 ## Installation and standalone usage
