@@ -1,7 +1,7 @@
 {
   "name": "@duraxis/cli",
   "version": "0.2.0",
-  "description": "Standalone migration CLI for Duraxis.",
+  "description": "Project setup, configuration, migrations and administration tooling for Duraxis.",
   "license": "ISC",
   "author": "Jo\u00e3o Paulo Dias <joaopdias.dev@gmail.com>",
   "keywords": [
@@ -9,7 +9,12 @@
     "database",
     "embedded",
     "transactions",
-    "typescript"
+    "typescript",
+    "cli",
+    "configuration",
+    "migrations",
+    "nestjs",
+    "administration"
   ],
   "repository": {
     "type": "git",

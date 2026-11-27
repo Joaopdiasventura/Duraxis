@@ -11,7 +11,7 @@ const bin = resolve("node_modules/@duraxis/cli/dist/bin.js");
 const cli = (...args) => execFileSync(process.execPath, [bin, ...args], { encoding: "utf8" });
 await verifyTypeScriptLoader(import.meta.resolve("@duraxis/cli"), process.cwd());
 assert.match(cli("--help"), /migration:generate/);
-cli("init");
+cli("init", "--orm", "--migrations", "--no-install", "--yes");
 const entity = `import { Entity, Column, PrimaryKey } from "@duraxis/orm";
 @Entity("users")
 export class User {

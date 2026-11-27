@@ -16,7 +16,12 @@ import {
   diffSchemas,
 } from "@duraxis/migrations";
 import type { CollectionDefinition } from "@duraxis/core";
-import { importFile, readJSON, type DuraxisConnectionConfig } from "./config.js";
+import {
+  importFile,
+  readJSON,
+  requireMigrationConfig,
+  type DuraxisConnectionConfig,
+} from "./config.js";
 
 export function artifactChecksum(source: string): string {
   const options: ts.TranspileOptions = {
@@ -49,6 +54,7 @@ export async function loadArtifacts(
   ownsLock = false,
   omitLatest = false,
 ): Promise<LocalArtifacts> {
+  requireMigrationConfig(config);
   const directory = resolve(root, config.migrations.directory);
   const snapshots = resolve(root, config.migrations.snapshots);
 

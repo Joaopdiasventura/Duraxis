@@ -77,3 +77,7 @@ For versioned evolution use [`@duraxis/migrations`](../migrations/README.md).
 ## Production resource and lifecycle limits
 
 See the [production hardening guide](../../docs/PRODUCTION-HARDENING.md) for bounded defaults, cancellation, verified maintenance, tenant trust boundaries, encrypted cursors, upgrade instructions and remaining pilot limitations. Core rejects storage adapters without bounded-read capability; destructive shared-storage garbage collection is unsupported.
+
+## CLI project setup
+
+Run `npx --package @duraxis/cli@latest duraxis init` to configure shared application factories, optional ORM/migrations and a storage driver. See the [setup and administration guide](../../docs/CLI-SETUP.md) for non-interactive options, NestJS ownership, deployment and diagnostics.
