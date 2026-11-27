@@ -1,6 +1,6 @@
 {
   "name": "@duraxis/storage-disk",
-  "version": "0.1.3",
+  "version": "0.2.0",
   "description": "Asynchronous filesystem StorageDriver implementation for Duraxis.",
   "license": "ISC",
   "author": "João Paulo Dias <joaopdias.dev@gmail.com>",
