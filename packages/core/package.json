@@ -1,6 +1,6 @@
 {
   "name": "@duraxis/core",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "Transactional embedded database engine and query primitives for Duraxis.",
   "license": "ISC",
   "author": "João Paulo Dias <joaopdias.dev@gmail.com>",

@@ -1,6 +1,6 @@
 {
   "name": "@duraxis/cli",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Standalone migration CLI for Duraxis.",
   "license": "ISC",
   "author": "Jo\u00e3o Paulo Dias <joaopdias.dev@gmail.com>",
