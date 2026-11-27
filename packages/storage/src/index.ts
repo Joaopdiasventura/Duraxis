@@ -1,4 +1,9 @@
-export type { StorageDriver, StorageDriverMetrics } from "./contracts/storage-driver.interface.js";
+export type {
+  StorageDriver,
+  StorageDriverMetrics,
+  StorageIterationOptions,
+  StorageReadOptions,
+} from "./contracts/storage-driver.interface.js";
 
 export type { StorageObject, StorageObjectInfo } from "./types/storage-object.js";
 
@@ -11,3 +16,5 @@ export { StorageError } from "./errors/storage.error.js";
 export type { StorageErrorCode } from "./errors/storage.error.js";
 
 export { assertStorageKey } from "./utils/assert-storage-key.js";
+
+export { assertWriteCondition } from "./types/storage-options.js";

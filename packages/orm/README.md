@@ -70,3 +70,7 @@ on registered entity/junction collections. Unrelated collections remain allowed.
 Existing `create` and `validate` modes preserve their behavior and declaration
 order. Production can run `duraxis migrate:up` before ORM initialization with
 schema validation; startup does not automatically execute migrations.
+
+## Production resource and lifecycle limits
+
+See the [production hardening guide](../../docs/PRODUCTION-HARDENING.md) for bounded defaults, cancellation, verified maintenance, tenant trust boundaries, encrypted cursors, upgrade instructions and remaining pilot limitations. Core rejects storage adapters without bounded-read capability; destructive shared-storage garbage collection is unsupported.

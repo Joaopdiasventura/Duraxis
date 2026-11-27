@@ -217,3 +217,66 @@ export function decodeJournal(bytes: Uint8Array): DecodedJournal {
   }
   return { frames, validBytes: offset, incompleteTail: false };
 }
+
+export async function replayJournal(
+  handle: {
+    stat(): Promise<{ readonly size: number }>;
+    read(
+      buffer: Uint8Array,
+      offset: number,
+      length: number,
+      position: number,
+    ): Promise<{ readonly bytesRead: number }>;
+  },
+  maxBytes: number,
+  consume: (payload: JournalPayload) => void,
+): Promise<Omit<DecodedJournal, "frames">> {
+  const info = await handle.stat();
+
+  if (info.size > maxBytes)
+    throw new StorageError("Storage journal exceeds configured limit", "RESOURCE_LIMIT");
+
+  let offset = 0;
+  let sequence = 1;
+
+  const read = async (buffer: Uint8Array, position: number) => {
+    let received = 0;
+
+    while (received < buffer.byteLength) {
+      const result = await handle.read(
+        buffer,
+        received,
+        buffer.byteLength - received,
+        position + received,
+      );
+
+      if (!result.bytesRead) break;
+
+      received += result.bytesRead;
+    }
+
+    return received;
+  };
+
+  while (offset < info.size) {
+    const header = new Uint8Array(4);
+
+    if ((await read(header, offset)) != 4) return { validBytes: offset, incompleteTail: true };
+
+    const length = new DataView(header.buffer).getUint32(0, false);
+
+    if (!length || length > MAX_JOURNAL_FRAME_BYTES)
+      throw corruption("Invalid storage journal frame length");
+
+    const payload = new Uint8Array(length);
+
+    if ((await read(payload, offset + 4)) != length)
+      return { validBytes: offset, incompleteTail: true };
+
+    consume(decodeFrame(payload, sequence++));
+
+    offset += 4 + length;
+  }
+
+  return { validBytes: offset, incompleteTail: false };
+}

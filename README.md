@@ -151,3 +151,7 @@ See the [CLI guide](packages/cli/README.md) for the complete lifecycle and
 [programmatic migrations](packages/migrations/README.md) for transaction and recovery
 semantics. Run migrations before starting applications with schema validation;
 existing applications do not require migration configuration.
+
+## Production resource and lifecycle limits
+
+See the [production hardening guide](docs/PRODUCTION-HARDENING.md) for bounded defaults, cancellation, verified maintenance, tenant trust boundaries, encrypted cursors, upgrade instructions and remaining pilot limitations. Core rejects storage adapters without bounded-read capability; destructive shared-storage garbage collection is unsupported.

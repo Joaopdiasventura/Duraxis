@@ -285,3 +285,7 @@ until one atomic commit. Streaming reads do not provide bounded transaction size
 There is no online DDL, resumable batching, distributed maintenance lock, or
 implicit partial migration commit. See [`@duraxis/migrations`](../migrations/README.md)
 for the programmatic API, recovery guarantees, and Core compatibility details.
+
+## Production resource and lifecycle limits
+
+See the [production hardening guide](../../docs/PRODUCTION-HARDENING.md) for bounded defaults, cancellation, verified maintenance, tenant trust boundaries, encrypted cursors, upgrade instructions and remaining pilot limitations. Core rejects storage adapters without bounded-read capability; destructive shared-storage garbage collection is unsupported.

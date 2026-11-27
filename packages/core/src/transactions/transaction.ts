@@ -1,3 +1,15 @@
+import type { CursorKeyring } from "../query/model/cursor.js";
+import { randomUUID } from "node:crypto";
+import {
+  ResourceScope,
+  resourceLimits,
+  estimateBytes,
+  ResourceExhaustedError,
+  OperationCancelledError,
+  materialize,
+  type ResourceLimits,
+  type ResourceReservation,
+} from "../resources/resource-manager.js";
 import type { StorageDriver } from "@duraxis/storage";
 
 import type { Snapshot } from "../commit/manifest.js";
@@ -72,11 +84,38 @@ function cloneSnapshot(snapshot: Snapshot): Snapshot {
 }
 
 export class Transaction {
+  public readonly id = randomUUID();
+  private readonly pendingCleanup = new Set<Promise<unknown>>();
+  private readonly localCancellation = new AbortController();
+  public readonly signal: AbortSignal;
+  public readonly resources: ResourceScope;
+  public readonly limits: Readonly<ResourceLimits>;
+  private readonly writeReservations = new Map<string, ResourceReservation>();
+  private readonly schemaReservations = new Map<string, ResourceReservation>();
   private readonly writes = new Map<string, PendingWrite>();
   private readonly schemas = new Map<string, CollectionDefinition | null>();
 
-  private readonly capturedSnapshot: Snapshot;
-  private readonly reader: ManifestSnapshotReader;
+  private snapshotValue?: Snapshot;
+
+  private get capturedSnapshot(): Snapshot {
+    if (!this.snapshotValue) throw new TransactionStateError("Transaction is closed");
+    return this.snapshotValue;
+  }
+
+  private set capturedSnapshot(value: Snapshot) {
+    this.snapshotValue = value;
+  }
+
+  private readerValue?: ManifestSnapshotReader;
+
+  private get reader(): ManifestSnapshotReader {
+    if (!this.readerValue) throw new TransactionStateError("Transaction is closed");
+    return this.readerValue;
+  }
+
+  private set reader(value: ManifestSnapshotReader) {
+    this.readerValue = value;
+  }
 
   private stateValue: TransactionState = "ACTIVE";
   private pendingReads = 0;
@@ -90,9 +129,44 @@ export class Transaction {
     snapshot: Snapshot,
     private readonly keys = new StorageKeyManager(),
     private readonly cursorSigningKey?: Uint8Array,
+    parentResources?: ResourceScope,
+    limits: ResourceLimits = resourceLimits(),
+    private readonly operationSignal?: AbortSignal,
+    private readonly onPublication?: () => void,
+    private readonly assertAccessScope?: () => void,
+    private readonly runtimeHooks: {
+      readonly cursorEncryption?: CursorKeyring;
+      readonly onPendingCleanup?: (promise: Promise<unknown>) => void;
+      readonly onCleanupFailure?: (error: unknown) => void;
+    } = {},
   ) {
+    this.signal = operationSignal
+      ? AbortSignal.any([operationSignal, this.localCancellation.signal])
+      : this.localCancellation.signal;
+
+    this.limits = limits;
+
+    this.resources = (parentResources ?? new ResourceScope({})).child({
+      workingBytes: limits.maxTransactionWorkingBytes,
+      writes: limits.maxPendingWrites,
+      writeBytes: limits.maxPendingWriteBytes,
+    });
+
+    this.resources.reserve({ transactions: 1 });
+    this.resources.reserve({ workingBytes: estimateBytes([...snapshot.manifest.catalog]) });
+
     this.capturedSnapshot = cloneSnapshot(snapshot);
     this.reader = new ManifestSnapshotReader(this.storage, this.capturedSnapshot, keys);
+  }
+
+  public get expectedStorageVersion(): string | null {
+    this.assertActive();
+    return this.capturedSnapshot.storageVersion;
+  }
+
+  public get hasChanges(): boolean {
+    this.assertActive();
+    return this.writes.size + this.schemas.size > 0;
   }
 
   public get state(): TransactionState {
@@ -117,6 +191,15 @@ export class Transaction {
       this.assertActive();
 
       return result;
+    } catch (error) {
+      if (
+        this.stateValue != "ACTIVE" &&
+        !this.operationSignal?.aborted &&
+        error instanceof OperationCancelledError
+      )
+        throw new TransactionStateError("Transaction is no longer active");
+
+      throw error;
     } finally {
       this.pendingReads--;
       if (this.pendingReads == 0) for (const resolve of this.readWaiters.splice(0)) resolve();
@@ -138,7 +221,7 @@ export class Transaction {
 
     if (key.startsWith(RECORD_PREFIX)) throw new Error("Reserved internal collection key");
 
-    this.writes.set(key, { type: "delete" });
+    this.stageDelete(key);
   }
 
   public defineCollection(definition: CollectionDefinition): void {
@@ -150,7 +233,7 @@ export class Transaction {
     if (this.collection(definition.name))
       throw new Error(`Collection already exists: ${definition.name}`);
 
-    this.schemas.set(definition.name, cloneSchema(definition));
+    this.stageSchema(definition.name, cloneSchema(definition));
   }
 
   public defineCollections(definitions: readonly CollectionDefinition[]): void {
@@ -169,7 +252,7 @@ export class Transaction {
     }
 
     for (const definition of definitions)
-      this.schemas.set(definition.name, cloneSchema(definition));
+      this.stageSchema(definition.name, cloneSchema(definition));
   }
 
   public getCollectionDefinitions(): readonly CollectionDefinition[] {
@@ -192,13 +275,13 @@ export class Transaction {
     if (name != definition.name)
       throw new Error("Collection replacement cannot rename a collection");
 
-    this.schemas.set(name, cloneSchema(definition));
+    this.stageSchema(name, cloneSchema(definition));
   }
 
   public dropCollection(name: string): void {
     this.assertActive();
     this.requireCollection(name);
-    this.schemas.set(name, null);
+    this.stageSchema(name, null);
   }
 
   public async getMetadata(namespace: string): Promise<Uint8Array | null> {
@@ -255,7 +338,7 @@ export class Transaction {
 
     validateCollection(updated);
 
-    this.schemas.set(collection, cloneSchema(updated));
+    this.stageSchema(collection, cloneSchema(updated));
   }
 
   public removeIndex(collection: string, indexName: string): void {
@@ -265,7 +348,7 @@ export class Transaction {
     if (!current.indexes.some((index) => index.name == indexName))
       throw new Error(`Unknown index: ${collection}/${indexName}`);
 
-    this.schemas.set(
+    this.stageSchema(
       collection,
       cloneSchema({
         ...current,
@@ -296,6 +379,18 @@ export class Transaction {
     let context!: QueryContext;
 
     context = new QueryContext(this.storage, cloneSnapshot(this.capturedSnapshot), this.keys, {
+      assertAccess: this.assertAccessScope,
+      onPendingCleanup: (promise) => {
+        this.pendingCleanup.add(promise);
+        this.runtimeHooks.onPendingCleanup?.(promise);
+
+        const complete = () => this.pendingCleanup.delete(promise);
+
+        promise.then(complete, complete);
+      },
+      onCleanupFailure: this.runtimeHooks.onCleanupFailure,
+      resources: this.resources,
+      limits: this.limits,
       writes: this.writes,
       catalog,
       onIteratorStart: () => {
@@ -333,20 +428,29 @@ export class Transaction {
 
     const source =
       explicit ??
-      this.planCompiler.compile(this.planner.plan(query, context.catalog), context.catalog);
+      this.planCompiler.compile(
+        this.planner.plan(query, context.catalog, context.limits),
+        context.catalog,
+      );
 
     const executor = new QueryExecutor(this.queryOptions(options));
     const transaction = this;
 
-    return (async function* () {
-      const unbindSignal = transaction.bindSignal(context, options?.signal);
+    const iterator = (async function* () {
+      let unbindSignal = () => {};
+
       try {
+        unbindSignal = transaction.bindSignal(context, options?.signal);
         yield* executor.execute(context, query, source);
       } finally {
         unbindSignal();
         context.close();
       }
     })();
+
+    context.bindCancellation(() => iterator.return(undefined));
+
+    return iterator;
   }
 
   public queryPage(query: LogicalQuery, options?: QueryExecutorOptions): Promise<QueryPage>;
@@ -375,7 +479,10 @@ export class Transaction {
 
       const source =
         explicit ??
-        this.planCompiler.compile(this.planner.plan(query, context.catalog), context.catalog);
+        this.planCompiler.compile(
+          this.planner.plan(query, context.catalog, context.limits),
+          context.catalog,
+        );
 
       return await new QueryExecutor(this.queryOptions(options)).page(context, query, source);
     } finally {
@@ -388,24 +495,35 @@ export class Transaction {
     this.assertActive();
 
     const schema = this.requireCollection(collection);
-    const parsed = validateDocument(schema, document);
-    const data = encodeDocument(parsed);
 
-    for (const index of schema.indexes)
-      for (const part of index.fields ??
-        (index.field ? [{ field: index.field, order: "ASC" as const }] : []))
-        indexedValue(parsed, part.field, fieldDefinition(schema, part.field));
+    const estimate = estimateBytes(
+      document,
+      this.limits.maxDocumentBytes * 4,
+      this.limits.maxDocumentDepth,
+    );
 
-    this.stagePut(recordKey(collection, id), data);
+    const encoding = this.resources.reserve({ workingBytes: estimate * 4 });
+
+    try {
+      const parsed = validateDocument(schema, document);
+      const data = encodeDocument(parsed);
+
+      for (const index of schema.indexes)
+        for (const part of index.fields ??
+          (index.field ? [{ field: index.field, order: "ASC" as const }] : []))
+          indexedValue(parsed, part.field, fieldDefinition(schema, part.field));
+
+      this.stagePut(recordKey(collection, id), data);
+    } finally {
+      encoding.release();
+    }
   }
 
   public deleteDocument(collection: string, id: string): void {
     this.assertActive();
     this.requireCollection(collection);
 
-    this.writes.set(recordKey(collection, id), {
-      type: "delete",
-    });
+    this.stageDelete(recordKey(collection, id));
   }
 
   public prepareForCommit(): PreparedTransaction {
@@ -413,6 +531,13 @@ export class Transaction {
 
     if (this.pendingReads != 0)
       throw new TransactionStateError("Transaction has pending reads; await all tx.get() calls");
+
+    this.resources.reserve({
+      workingBytes: [...this.writes].reduce(
+        (n, [key, op]) => n + key.length * 2 + 96 + (op.type == "put" ? op.data.byteLength : 0),
+        0,
+      ),
+    });
 
     this.stateValue = "PREPARING";
 
@@ -450,8 +575,12 @@ export class Transaction {
   }
 
   public beginPublication(): void {
+    this.assertAccessScope?.();
+
     if (this.stateValue != "PREPARING")
       throw new TransactionStateError("Transaction is not preparing");
+
+    this.onPublication?.();
     this.stateValue = "COMMITTING";
   }
 
@@ -466,21 +595,75 @@ export class Transaction {
   }
 
   public abort(): void {
+    if (this.stateValue == "COMMITTING") return;
     if (this.stateValue != "COMMITTED" && this.stateValue != "UNKNOWN") this.stateValue = "ABORTED";
   }
 
+  public rejectPublication(): void {
+    if (this.stateValue != "COMMITTING")
+      throw new TransactionStateError("No publication in progress");
+
+    this.stateValue = "ABORTED";
+  }
+
   public close(): void {
+    if (this.stateValue == "COMMITTING") return;
+
+    this.localCancellation.abort(new TransactionStateError("Transaction is closed"));
+
     if (this.stateValue == "ACTIVE" || this.stateValue == "PREPARING") this.abort();
-    for (const context of [...this.queryContexts]) context.close();
+
+    for (const context of [...this.queryContexts])
+      context.cancel(new TransactionStateError("Transaction is closed"));
 
     this.queryContexts.clear();
     this.writes.clear();
     this.schemas.clear();
+    this.writeReservations.clear();
+    this.schemaReservations.clear();
+
+    if (this.pendingCleanup.size)
+      void Promise.allSettled([...this.pendingCleanup]).then(() => this.resources.close());
+    else this.resources.close();
+
+    this.snapshotValue = undefined;
+    this.readerValue = undefined;
+  }
+
+  public createMaterializationBudget<T>() {
+    return materialize<T>(this.resources, this.limits);
+  }
+
+  private reserveWrite(key: string, bytes: number): void {
+    if (bytes > this.limits.maxDocumentBytes)
+      throw new ResourceExhaustedError("documentBytes", this.limits.maxDocumentBytes);
+
+    const amounts = { writes: 1, writeBytes: bytes, workingBytes: bytes + key.length * 2 + 128 };
+    const current = this.writeReservations.get(key);
+
+    if (current) current.resize(amounts);
+    else this.writeReservations.set(key, this.resources.reserve(amounts));
+  }
+
+  private stageDelete(key: string): void {
+    this.reserveWrite(key, 0);
+    this.writes.set(key, { type: "delete" });
+  }
+
+  private stageSchema(name: string, schema: CollectionDefinition | null): void {
+    const amounts = { workingBytes: estimateBytes(schema) + 128 };
+    const current = this.schemaReservations.get(name);
+
+    if (current) current.resize(amounts);
+    else this.schemaReservations.set(name, this.resources.reserve(amounts));
+
+    this.schemas.set(name, schema);
   }
 
   private stagePut(key: string, data: Uint8Array): void {
     if (!(data instanceof Uint8Array)) throw new TypeError("Storage value must be Uint8Array");
 
+    this.reserveWrite(key, data.byteLength);
     this.writes.set(key, {
       type: "put",
       data: new Uint8Array(data),
@@ -495,14 +678,16 @@ export class Transaction {
   private queryOptions(options?: QueryExecutorOptions): QueryExecutorOptions {
     return {
       ...options,
-      cursorSigningKey: options?.cursorSigningKey ?? this.cursorSigningKey,
+      cursorSigningKey: this.cursorSigningKey,
+      cursorEncryption: this.runtimeHooks.cursorEncryption,
+      cursorNamespace: this.keys.namespace,
     };
   }
 
   private bindSignal(context: QueryContext, signal?: AbortSignal): () => void {
     if (!signal) return () => {};
     const cancel = () => context.cancel(signal.reason ?? new Error("Query cancelled"));
-    if (signal.aborted) cancel();
+    if (signal.aborted) throw signal.reason ?? new Error("Query cancelled");
     else signal.addEventListener("abort", cancel, { once: true });
     return () => signal.removeEventListener("abort", cancel);
   }
@@ -528,11 +713,15 @@ export class Transaction {
   }
 
   private assertActive(): void {
+    this.assertAccessScope?.();
+    this.operationSignal?.throwIfAborted();
+
     if (this.stateValue != "ACTIVE")
       throw new TransactionStateError("Transaction is no longer active");
   }
 
   private validateKey(key: string): void {
+    if (Buffer.byteLength(key) > 1024) throw new ResourceExhaustedError("keyBytes", 1024);
     this.keys.validateLogicalKey(key);
     encodeIndexKey(new TextEncoder().encode(key));
   }

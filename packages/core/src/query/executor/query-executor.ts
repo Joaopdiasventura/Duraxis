@@ -1,5 +1,6 @@
+import { materialize } from "../../resources/resource-manager.js";
 import type { AccessPath, LogicalQuery, QueryOrder } from "../model/query.js";
-import { decodeQueryCursor, encodeQueryCursor } from "../model/cursor.js";
+import { decodeQueryCursor, encodeQueryCursor, type CursorKeyring } from "../model/cursor.js";
 import { validateQuery } from "../validation/query-validator.js";
 
 import type { QueryContext } from "../context/query-context.js";
@@ -93,6 +94,8 @@ export interface QueryExecutorOptions {
   readonly maxSortRowsInMemory?: number;
   readonly sortSpill?: SortSpillStore;
   readonly cursorSigningKey?: Uint8Array;
+  readonly cursorEncryption?: CursorKeyring;
+  readonly cursorNamespace?: string;
   readonly signal?: AbortSignal;
 }
 
@@ -127,7 +130,7 @@ export class QueryExecutor {
     forceDeterministicSort = false,
     executionLimit: number | undefined = query.limit,
   ): QueryOperator {
-    validateQuery(query, context.catalog);
+    validateQuery(query, context.catalog, context.limits);
     let operator = source;
 
     if (query.where) operator = new Filter(operator, query.where, query.collection);
@@ -148,6 +151,7 @@ export class QueryExecutor {
         context.catalog.get(query.collection)!,
         query,
         this.signingKey(),
+        this.options.cursorNamespace,
       );
 
       operator = new CursorAfter(operator, orderBy, cursor.values, cursor.id, query.collection);
@@ -169,10 +173,14 @@ export class QueryExecutor {
     );
   }
 
-  private signingKey(): Uint8Array {
+  private signingKey(): Uint8Array | CursorKeyring {
+    if (this.options.cursorEncryption) return this.options.cursorEncryption;
+
     const key = this.options.cursorSigningKey;
+
     if (!(key instanceof Uint8Array) || key.byteLength < 32)
       throw new Error("Cursor operations require a signing key of at least 32 bytes");
+
     return key;
   }
 
@@ -195,10 +203,22 @@ export class QueryExecutor {
     const operator = this.semanticPipeline(context, query, source, true, lookahead);
     const raw: QueryRow[] = [];
 
-    for await (const row of operator.execute(context)) raw.push(row);
+    const results = materialize<QueryRow>(context.resources, context.limits);
+
+    try {
+      for await (const row of operator.execute(context)) {
+        results.add(row);
+        raw.push(row);
+      }
+    } finally {
+      results.close();
+    }
+
     const schema = context.catalog.get(query.collection)!;
     const hasMore = query.limit != null && query.limit > 0 && raw.length > query.limit;
+
     if (hasMore) raw.pop();
+
     const nextCursor =
       hasMore && raw.length
         ? encodeQueryCursor(
@@ -207,6 +227,7 @@ export class QueryExecutor {
             query,
             raw[raw.length - 1]!,
             this.signingKey(),
+            this.options.cursorNamespace,
           )
         : null;
 

@@ -40,9 +40,16 @@ import {
 } from "./s3-error.mapper.js";
 
 type MutableMetrics = { -readonly [Key in keyof StorageDriverMetrics]: StorageDriverMetrics[Key] };
+
 const CONFLICT = { success: false, reason: "conflict" } as const;
 
+const MAX_OBJECT_BYTES = 16 * 1024 * 1024;
+const MAX_PENDING_OPERATIONS = 4096;
+
 export class S3StorageDriver implements StorageDriver {
+  public readonly capabilities = Object.freeze({ boundedReads: true });
+  readonly #maxObjectBytes: number;
+  readonly #maxPendingOperations: number;
   readonly #client: S3Client;
   readonly #bucket: string;
   readonly #prefix: string;
@@ -57,6 +64,7 @@ export class S3StorageDriver implements StorageDriver {
     synchronizationWaitMs: 0,
   };
 
+  #bufferBytes = 0;
   #closing = false;
   #active = 0;
   #drain?: () => void;
@@ -64,7 +72,12 @@ export class S3StorageDriver implements StorageDriver {
 
   public constructor(options: S3StorageDriverOptions) {
     this.#prefix = validateOptions(options);
+
+    this.#maxObjectBytes = options.maxObjectBytes ?? MAX_OBJECT_BYTES;
+    this.#maxPendingOperations = options.maxPendingOperations ?? MAX_PENDING_OPERATIONS;
+
     this.#bucket = options.bucket;
+
     this.#readAttempts = options.client?.maxAttempts ?? 3;
 
     this.#client = new S3Client({
@@ -78,9 +91,14 @@ export class S3StorageDriver implements StorageDriver {
     return { ...this.#metrics };
   }
 
-  public get(key: string): Promise<StorageObject | null> {
+  public get(
+    key: string,
+    options: { readonly signal?: AbortSignal; readonly maxBytes?: number } = {},
+  ): Promise<StorageObject | null> {
     return this.operate(async () => {
       const physicalKey = this.key(key);
+
+      options.signal?.throwIfAborted();
 
       this.#metrics.reads++;
 
@@ -90,25 +108,59 @@ export class S3StorageDriver implements StorageDriver {
         try {
           response = await this.#client.send(
             new GetObjectCommand({ Bucket: this.#bucket, Key: physicalKey }),
+            { abortSignal: options.signal },
           );
         } catch (error) {
           if (isMissingKey(error)) return null;
           throw error;
         }
 
+        let releaseBuffer = () => {};
         try {
           const state = objectState(response.Metadata);
 
           const version = requireVersion(response.ETag);
+
           if (!response.Body) throw new StorageError("Missing S3 response body", "CORRUPTION");
-          if (response.ContentLength != null && response.ContentLength > 5 * 1024 ** 3)
+
+          const maximum =
+            Math.min(options.maxBytes ?? this.#maxObjectBytes, this.#maxObjectBytes) + 72;
+
+          if (response.ContentLength != null && response.ContentLength > maximum)
             throw new StorageError("S3 object exceeds single-object limit", "RESOURCE_LIMIT");
 
-          const bytes = await response.Body.transformToByteArray();
+          if (!(Symbol.asyncIterator in response.Body))
+            throw new StorageError("S3 body does not support incremental reads", "CORRUPTION");
+
+          releaseBuffer = this.reserveBuffer(
+            Math.min(response.ContentLength ?? maximum, maximum) * 3,
+          );
+
+          const chunks: Uint8Array[] = [];
+
+          let total = 0;
+
+          for await (const chunk of response.Body as AsyncIterable<unknown>) {
+            options.signal?.throwIfAborted();
+
+            if (!(chunk instanceof Uint8Array))
+              throw new StorageError("Invalid S3 body chunk", "CORRUPTION");
+
+            if (chunks.length >= 4096 || total + chunk.byteLength > maximum)
+              throw new StorageError("S3 body exceeds byte limit", "RESOURCE_LIMIT");
+
+            total += chunk.byteLength;
+
+            chunks.push(chunk);
+          }
+
+          const bytes = Buffer.concat(chunks, total);
           const data = decodeObject(bytes);
 
           return state == "deleted" ? null : { data, version };
         } finally {
+          releaseBuffer();
+
           if (
             response.Body &&
             "destroy" in response.Body &&
@@ -128,6 +180,9 @@ export class S3StorageDriver implements StorageDriver {
     return this.operate(async () => {
       const physicalKey = this.key(key);
 
+      if (data.byteLength > this.#maxObjectBytes)
+        throw new StorageError("S3 object exceeds byte limit", "RESOURCE_LIMIT");
+
       if (!(data instanceof Uint8Array)) throw new TypeError("Storage data must be a Uint8Array");
 
       if (data.byteLength > 5 * 1024 ** 3 - 72)
@@ -142,33 +197,38 @@ export class S3StorageDriver implements StorageDriver {
 
       const logicalBytes = data.byteLength;
 
-      const body = encodeObject(data);
+      const release = this.reserveBuffer((data.byteLength + 72) * 2);
+      try {
+        const body = encodeObject(data);
 
-      if (
-        options.condition.type == "if-version" &&
-        !(await this.matchesLiveVersion(physicalKey, options.condition.version))
-      )
-        return CONFLICT;
+        if (
+          options.condition.type == "if-version" &&
+          !(await this.matchesLiveVersion(physicalKey, options.condition.version))
+        )
+          return CONFLICT;
 
-      const initial = await this.write(
-        physicalKey,
-        body,
-        "live",
-        options.condition.type == "if-absent" ? undefined : options.condition.version,
-      );
+        const initial = await this.write(
+          physicalKey,
+          body,
+          "live",
+          options.condition.type == "if-absent" ? undefined : options.condition.version,
+        );
 
-      let result = initial;
+        let result = initial;
 
-      if (!initial.success && options.condition.type == "if-absent") {
-        const current = await this.head(physicalKey);
+        if (!initial.success && options.condition.type == "if-absent") {
+          const current = await this.head(physicalKey);
 
-        if (current && objectState(current.Metadata) == "deleted")
-          result = await this.write(physicalKey, body, "live", requireVersion(current.ETag));
+          if (current && objectState(current.Metadata) == "deleted")
+            result = await this.write(physicalKey, body, "live", requireVersion(current.ETag));
+        }
+
+        if (result.success) this.#metrics.bytesWritten += logicalBytes;
+
+        return result;
+      } finally {
+        release();
       }
-
-      if (result.success) this.#metrics.bytesWritten += logicalBytes;
-
-      return result;
     });
   }
 
@@ -202,43 +262,58 @@ export class S3StorageDriver implements StorageDriver {
     });
   }
 
-  public list(prefix: string): Promise<readonly StorageObjectInfo[]> {
-    return this.operate(async () => {
-      if (
-        typeof prefix != "string" ||
-        prefix.includes("\0") ||
-        Buffer.from(prefix).toString() != prefix
-      )
-        throw new StorageError("Invalid storage prefix", "INVALID_KEY");
+  public async *iterate(
+    prefix: string,
+    options: { readonly pageSize?: number; readonly signal?: AbortSignal } = {},
+  ): AsyncIterable<StorageObjectInfo> {
+    if (
+      typeof prefix != "string" ||
+      prefix.includes("\0") ||
+      Buffer.from(prefix).toString() != prefix
+    )
+      throw new StorageError("Invalid storage prefix", "INVALID_KEY");
 
-      const physicalPrefix = this.#prefix + prefix;
+    const size = options.pageSize ?? 256;
 
-      if (Buffer.byteLength(physicalPrefix) > 1024)
-        throw new StorageError("Storage prefix is too long", "INVALID_KEY");
+    if (!Number.isSafeInteger(size) || size < 1 || size > 1000)
+      throw new RangeError("Invalid listing page size");
 
-      this.#metrics.lists++;
+    const physicalPrefix = this.#prefix + prefix;
 
-      const objects = new Map<string, StorageObjectInfo>();
+    if (Buffer.byteLength(physicalPrefix) > 1024)
+      throw new StorageError("Storage prefix is too long", "INVALID_KEY");
 
-      const tokens = new Set<string>();
+    this.#metrics.lists++;
 
-      let token: string | undefined;
+    let token: string | undefined;
+    let pages = 0;
 
-      do {
-        const page = await this.read(
-          async () =>
-            await this.#client.send(
-              new ListObjectsV2Command({
-                Bucket: this.#bucket,
-                Prefix: physicalPrefix,
-                ContinuationToken: token,
-              }),
-            ),
-        );
+    do {
+      options.signal?.throwIfAborted();
 
-        const contents = page.Contents ?? [];
+      if (++pages > 100_000)
+        throw new StorageError("S3 listing page limit exceeded", "RESOURCE_LIMIT");
 
-        for (let offset = 0; offset < contents.length; offset += 16) {
+      const page = await this.operate(() =>
+        this.read(() =>
+          this.#client.send(
+            new ListObjectsV2Command({
+              Bucket: this.#bucket,
+              Prefix: physicalPrefix,
+              ContinuationToken: token,
+              MaxKeys: size,
+            }),
+            { abortSignal: options.signal },
+          ),
+        ),
+      );
+
+      const contents = page.Contents ?? [];
+
+      for (let offset = 0; offset < contents.length; offset += 16) {
+        options.signal?.throwIfAborted();
+
+        const batch = await this.operate(async () => {
           const results = await Promise.allSettled(
             contents.slice(offset, offset + 16).map(async (item) => {
               if (!item.Key?.startsWith(physicalPrefix))
@@ -250,29 +325,50 @@ export class S3StorageDriver implements StorageDriver {
 
               const head = await this.head(item.Key);
 
-              if (!head || objectState(head.Metadata) == "deleted") return;
+              if (!head || objectState(head.Metadata) == "deleted") return null;
 
               const createdAt = head.LastModified?.getTime();
 
               if (createdAt == null || !Number.isSafeInteger(createdAt) || createdAt < 0)
                 throw new StorageError("Missing or invalid S3 object timestamp", "CORRUPTION");
 
-              objects.set(key, { key, version: requireVersion(head.ETag), createdAt });
+              return { key, version: requireVersion(head.ETag), createdAt };
             }),
           );
 
           for (const result of results) if (result.status == "rejected") throw result.reason;
+
+          return results.flatMap((result) =>
+            result.status == "fulfilled" && result.value ? [result.value] : [],
+          );
+        });
+
+        for (const entry of batch) {
+          options.signal?.throwIfAborted();
+          yield entry;
         }
+      }
 
-        token = page.IsTruncated ? page.NextContinuationToken : undefined;
-        if (page.IsTruncated && (!token || tokens.has(token)))
-          throw new StorageError("Invalid S3 pagination token", "CORRUPTION");
+      const next = page.IsTruncated ? page.NextContinuationToken : undefined;
 
-        if (token) tokens.add(token);
-      } while (token);
+      if (page.IsTruncated && (!next || next == token))
+        throw new StorageError("Invalid S3 pagination token", "CORRUPTION");
 
-      return [...objects.values()].sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
-    });
+      token = next;
+    } while (token);
+  }
+
+  public async list(prefix: string): Promise<readonly StorageObjectInfo[]> {
+    const result = new Map<string, StorageObjectInfo>();
+
+    for await (const entry of this.iterate(prefix, { pageSize: 1000 })) {
+      if (result.size >= 100_000)
+        throw new StorageError("Legacy listing limit exceeded; use iterate()", "RESOURCE_LIMIT");
+
+      result.set(entry.key, entry);
+    }
+
+    return [...result.values()].sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
   }
 
   public close(): Promise<void> {
@@ -292,7 +388,26 @@ export class S3StorageDriver implements StorageDriver {
     return this.#closePromise;
   }
 
+  private reserveBuffer(bytes: number): () => void {
+    if (this.#bufferBytes + bytes > 64 * 1024 * 1024)
+      throw new StorageError("S3 buffered-byte limit exceeded", "RESOURCE_LIMIT");
+
+    this.#bufferBytes += bytes;
+
+    let released = false;
+
+    return () => {
+      if (!released) {
+        released = true;
+        this.#bufferBytes -= bytes;
+      }
+    };
+  }
+
   private async operate<TResult>(callback: () => Promise<TResult>): Promise<TResult> {
+    if (this.#active >= this.#maxPendingOperations)
+      throw new StorageError("S3 operation admission limit exceeded", "RESOURCE_LIMIT");
+
     if (this.#closing) throw new StorageError("S3 storage driver is closed", "CLOSED");
 
     this.#active++;

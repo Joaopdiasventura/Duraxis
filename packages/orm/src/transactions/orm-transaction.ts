@@ -8,12 +8,20 @@ import type { TransactionContext } from "./transaction-context.js";
 export class OrmTransactionManager implements TransactionContext {
   readonly #repositories = new Map<Function, unknown>();
   #active = true;
+  readonly #abort = () => this.close();
+
+  public get signal(): AbortSignal {
+    return this.transaction.signal;
+  }
 
   public constructor(
     private readonly database: DuraxisDatabase,
     private readonly transaction: Transaction,
     private readonly registry: MetadataRegistry,
-  ) {}
+  ) {
+    this.transaction.signal.addEventListener("abort", this.#abort, { once: true });
+    if (this.transaction.signal.aborted) this.close();
+  }
 
   public getRepository<TEntity extends object>(entity: EntityClass<TEntity>): Repository<TEntity> {
     this.assertActive();
@@ -35,10 +43,12 @@ export class OrmTransactionManager implements TransactionContext {
 
   public close(): void {
     this.#active = false;
+    this.transaction.signal.removeEventListener("abort", this.#abort);
     this.#repositories.clear();
   }
 
   private assertActive(): void {
-    if (!this.#active) throw new TransactionManagerClosedError();
+    if (!this.#active || this.transaction.state != "ACTIVE")
+      throw new TransactionManagerClosedError();
   }
 }

@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   DuraxisDatabase,
+  ResourceExhaustedError,
   CommitOutcomeUnknownError,
   TransactionConflictError,
 } from "@duraxis/core";
@@ -441,4 +442,22 @@ describe("compile-time query types", () => {
     };
     expect(check).toBeTypeOf("function");
   });
+});
+
+it("applies core materialization limits to ORM results", async () => {
+  const database = new DuraxisDatabase({
+    storage: new MemoryStorageDriver(),
+    resources: { maxResultRows: 1 },
+  });
+  const orm = new DuraxisORM({ database, entities: [Product], schema: { mode: "create" } });
+  await orm.initialize();
+  try {
+    const products = orm.getRepository(Product);
+    await products.insert({ id: "1", category: "one", price: 1 });
+    await products.insert({ id: "2", category: "two", price: 2 });
+    await expect(products.find()).rejects.toThrow(ResourceExhaustedError);
+    expect(database.getMetrics().resources.current.workingBytes).toBe(0);
+  } finally {
+    await orm.close();
+  }
 });

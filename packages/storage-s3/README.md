@@ -287,3 +287,7 @@ these production implementations are changed.
 The package follows the local ESM/CommonJS Vite build, strict TypeScript declarations, pnpm
 workspace, Vitest project, package-validation and Changesets conventions. Public declarations only
 reference Duraxis types. The repository has no Turborepo build configuration to extend.
+
+## Production resource and lifecycle limits
+
+See the [production hardening guide](../../docs/PRODUCTION-HARDENING.md) for bounded defaults, cancellation, verified maintenance, tenant trust boundaries, encrypted cursors, upgrade instructions and remaining pilot limitations. Core rejects storage adapters without bounded-read capability; destructive shared-storage garbage collection is unsupported.

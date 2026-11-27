@@ -1,7 +1,8 @@
+import { PreparedWrites } from "../resources/prepared-writes.js";
+import { coordinateCommit } from "../gc/storage-coordination.js";
 import { QueryContext } from "../query/context/query-context.js";
 import { recordKey, validateDocument, encodeDocument } from "../catalog/collection-schema.js";
 
-import { randomUUID } from "node:crypto";
 import type { StorageDriver } from "@duraxis/storage";
 
 import { encodeManifest, type Manifest } from "./manifest.js";
@@ -23,6 +24,7 @@ export class CommitCoordinator {
   public constructor(
     private readonly storage: StorageDriver,
     private readonly keys = new StorageKeyManager(),
+    private readonly coordinationStorage = storage,
   ) {
     this.primary = new PrimaryIndex(storage, keys);
     this.secondary = new SecondaryIndexManager(storage, keys);
@@ -30,6 +32,29 @@ export class CommitCoordinator {
   }
 
   public async commit(transaction: Transaction): Promise<void> {
+    const admission = transaction.resources.reserve({ queuedOperations: 1 });
+
+    try {
+      return await coordinateCommit(
+        this.coordinationStorage,
+        transaction.limits.maxQueuedOperations,
+        async () => {
+          if (transaction.hasChanges) {
+            const current = await this.storage.get(this.keys.manifestKey);
+
+            if ((current?.version ?? null) != transaction.expectedStorageVersion)
+              throw new TransactionConflictError();
+          }
+
+          await this.publish(transaction);
+        },
+      );
+    } finally {
+      admission.release();
+    }
+  }
+
+  private async publish(transaction: Transaction): Promise<void> {
     const prepared = transaction.prepareForCommit();
 
     if (prepared.writes.size == 0 && prepared.schemaChanges.size == 0) {
@@ -37,11 +62,11 @@ export class CommitCoordinator {
       return;
     }
 
-    const transactionId = randomUUID();
+    const transactionId = transaction.id;
 
     const catalog = new Map(prepared.snapshot.manifest.catalog);
 
-    const staged = new Map(prepared.writes);
+    const staged = new PreparedWrites(transaction.resources, transaction.limits, prepared.writes);
 
     for (const [name, schema] of prepared.schemaChanges) {
       if (schema == null) catalog.delete(name);
@@ -69,6 +94,8 @@ export class CommitCoordinator {
       const context = new QueryContext(this.storage, prepared.snapshot, this.keys, {
         writes: staged,
         catalog: scanCatalog,
+        resources: transaction.resources,
+        limits: transaction.limits,
       });
 
       try {
@@ -87,8 +114,9 @@ export class CommitCoordinator {
       }
     }
 
-    const writes = await this.foreignKeys.prepare(prepared.snapshot, staged, catalog);
+    const writes = await this.foreignKeys.prepare(prepared.snapshot, staged, catalog, staged);
 
+    for (const [key, value] of writes) if (!staged.has(key)) staged.set(key, value);
     const changes = new Map<string, string | null>();
 
     for (const [key, operation] of writes) {
@@ -115,6 +143,7 @@ export class CommitCoordinator {
       primaryRoot,
       writes,
       catalog,
+      transaction.resources,
     );
 
     const commitBytes = encodeCommitRecord({
@@ -162,7 +191,10 @@ export class CommitCoordinator {
       throw new CommitOutcomeUnknownError(transactionId, cause);
     }
 
-    if (!result.success) throw new TransactionConflictError();
+    if (!result.success) {
+      transaction.rejectPublication();
+      throw new TransactionConflictError();
+    }
 
     transaction.markCommitted();
   }

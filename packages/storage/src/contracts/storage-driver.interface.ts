@@ -12,8 +12,24 @@ export interface StorageDriverMetrics {
   readonly synchronizationWaitMs: number;
 }
 
+export interface StorageReadOptions {
+  readonly signal?: AbortSignal;
+  readonly maxBytes?: number;
+}
+
+export interface StorageIterationOptions {
+  readonly pageSize?: number;
+  readonly signal?: AbortSignal;
+}
+
 export interface StorageDriver {
-  get(key: string): Promise<StorageObject | null>;
+  readonly capabilities?: { readonly boundedReads: boolean };
+
+  iterate?(prefix: string, options?: StorageIterationOptions): AsyncIterable<StorageObjectInfo>;
+
+  verifyExclusiveOwnership?(): Promise<void>;
+
+  get(key: string, options?: StorageReadOptions): Promise<StorageObject | null>;
 
   put(key: string, data: Uint8Array, options: WriteOptions): Promise<WriteResult>;
 

@@ -263,8 +263,19 @@ export class Repository<TEntity extends object> {
 
   private async queryRows(query: LogicalQuery, signal?: AbortSignal): Promise<readonly QueryRow[]> {
     this.runtime.assertUsable();
+
     const rows: QueryRow[] = [];
-    for await (const row of this.sourceQuery(query, signal)) rows.push(row);
+    const memory = this.runtime.database.createMaterializationBudget<QueryRow>();
+
+    try {
+      for await (const row of this.sourceQuery(query, signal)) {
+        memory.add(row);
+        rows.push(row);
+      }
+    } finally {
+      memory.close();
+    }
+
     return rows;
   }
 

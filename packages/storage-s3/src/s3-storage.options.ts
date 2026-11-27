@@ -1,6 +1,9 @@
 export interface S3StorageDriverOptions {
   readonly bucket: string;
   readonly prefix?: string;
+  readonly maxObjectBytes?: number;
+  readonly maxPendingOperations?: number;
+
   readonly client?: {
     readonly region?: string;
     readonly endpoint?: string;
@@ -16,6 +19,18 @@ export interface S3StorageDriverOptions {
 
 export function validateOptions(options: S3StorageDriverOptions): string {
   const bucket = options?.bucket;
+
+  if (
+    options?.maxObjectBytes !== undefined &&
+    (!Number.isSafeInteger(options.maxObjectBytes) || options.maxObjectBytes < 1)
+  )
+    throw new RangeError("Invalid S3 object byte limit");
+
+  if (
+    options?.maxPendingOperations !== undefined &&
+    (!Number.isSafeInteger(options.maxPendingOperations) || options.maxPendingOperations < 1)
+  )
+    throw new RangeError("Invalid S3 admission limit");
 
   if (
     typeof bucket != "string" ||
