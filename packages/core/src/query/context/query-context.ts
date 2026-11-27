@@ -1,3 +1,11 @@
+import {
+  ResourceScope,
+  OperationCancelledError,
+  resourceLimits,
+  estimateBytes,
+  type ResourceLimits,
+  type ResourceReservation,
+} from "../../resources/resource-manager.js";
 import type { StorageDriver } from "@duraxis/storage";
 import type { Snapshot } from "../../commit/manifest.js";
 import {
@@ -38,11 +46,16 @@ export interface QueryMetrics {
 }
 
 export interface QueryContextOptions {
+  readonly assertAccess?: () => void;
+  readonly resources?: ResourceScope;
+  readonly limits?: ResourceLimits;
   readonly writes?: ReadonlyMap<string, PendingWrite>;
   readonly catalog?: ReadonlyMap<string, CollectionDefinition>;
   readonly onIteratorStart?: () => void;
   readonly onIteratorEnd?: () => void;
   readonly onClose?: () => void;
+  readonly onPendingCleanup?: (promise: Promise<unknown>) => void;
+  readonly onCleanupFailure?: (error: unknown) => void;
 }
 
 function cloneWrites(
@@ -60,14 +73,19 @@ function cloneWrites(
 }
 
 export class QueryContext {
+  public readonly resources: ResourceScope;
+  public readonly limits: Readonly<ResourceLimits>;
+  private readonly iteratorReservations: ResourceReservation[] = [];
   private readonly primary: PrimaryIndex;
   private readonly secondary: SecondaryIndexManager;
   private readonly nodeCache: BPlusTreeNodeCache;
-  private readonly writes: ReadonlyMap<string, PendingWrite>;
+  private readonly writes: Map<string, PendingWrite>;
   private readonly controller = new AbortController();
   private readonly startedAt = performance.now();
   private active = true;
   private iterators = 0;
+  private readonly timer: ReturnType<typeof setTimeout>;
+  private readonly cancellationReturns = new Set<() => Promise<unknown>>();
 
   public readonly metrics: QueryMetrics = {
     storageReads: 0,
@@ -80,19 +98,75 @@ export class QueryContext {
     cacheMisses: 0,
     durationMs: 0,
   };
-  public readonly catalog: ReadonlyMap<string, CollectionDefinition>;
+  private snapshotValue?: Snapshot;
+  
+  public get snapshot(): Snapshot {
+    this.assertActive();
+    return this.snapshotValue!;
+  }
+
+  private readonly catalogValue = new Map<string, CollectionDefinition>();
+  public get catalog(): ReadonlyMap<string, CollectionDefinition> {
+    return this.catalogValue;
+  }
 
   public constructor(
     storage: StorageDriver,
-    public readonly snapshot: Snapshot,
+    snapshot: Snapshot,
     keys: StorageKeyManager,
     private readonly options: QueryContextOptions = {},
   ) {
-    this.nodeCache = new BPlusTreeNodeCache(new BPlusTreeNodeStore(storage, keys));
-    this.primary = new PrimaryIndex(storage, keys, this.nodeCache);
-    this.secondary = new SecondaryIndexManager(storage, keys, this.nodeCache);
+    this.snapshotValue = snapshot;
+
+    this.limits = options.limits ?? resourceLimits();
+
+    this.resources = (options.resources ?? new ResourceScope({})).child({
+      workingBytes: this.limits.maxQueryWorkingBytes,
+      spillBytes: this.limits.maxSpillBytes,
+    });
+
+    try {
+      this.resources.reserve({
+        queries: 1,
+        iterators: 1,
+        workingBytes: estimateBytes([...(options.writes ?? [])]),
+      });
+    } catch (error) {
+      this.resources.close();
+      throw error;
+    }
+
+    const queryStorage: StorageDriver = {
+      put: storage.put.bind(storage),
+      delete: storage.delete.bind(storage),
+      list: storage.list.bind(storage),
+      get: (key, options) =>
+        storage.get(key, {
+          ...options,
+          signal: options?.signal ? AbortSignal.any([this.signal, options.signal]) : this.signal,
+        }),
+    };
+
+    this.nodeCache = new BPlusTreeNodeCache(
+      new BPlusTreeNodeStore(queryStorage, keys),
+      256,
+      Math.min(4 * 1024 * 1024, this.limits.maxQueryWorkingBytes),
+      this.resources,
+    );
+
+    this.primary = new PrimaryIndex(queryStorage, keys, this.nodeCache);
+    this.secondary = new SecondaryIndexManager(queryStorage, keys, this.nodeCache);
     this.writes = cloneWrites(options.writes);
-    this.catalog = new Map(options.catalog ?? snapshot.manifest.catalog);
+
+    for (const [name, definition] of options.catalog ?? snapshot.manifest.catalog)
+      this.catalogValue.set(name, definition);
+
+    this.timer = setTimeout(
+      () => this.cancel(new OperationCancelledError("Query lifetime expired")),
+      this.limits.maxQueryDurationMs,
+    );
+
+    this.timer.unref();
   }
 
   public get generation(): string {
@@ -105,34 +179,123 @@ export class QueryContext {
     return this.active;
   }
 
-  public close(reason: unknown = new Error("Query context is closed")): void {
+  public bindCancellation(close: () => Promise<unknown>): () => void {
+    this.cancellationReturns.add(close);
+    return () => this.cancellationReturns.delete(close);
+  }
+
+  private managed(factory: () => AsyncIterable<QueryRow>): AsyncIterable<QueryRow> {
+    const context = this;
+
+    const iterator = (async function* () {
+      const unbind = context.bindCancellation(() => iterator.return(undefined));
+      try {
+        yield* factory();
+      } finally {
+        unbind();
+      }
+    })();
+    return iterator;
+  }
+
+  public scanCollection(
+    collection: string,
+    options: {
+      readonly direction?: "ASC" | "DESC";
+      readonly limit?: number;
+      readonly signal?: AbortSignal;
+    } = {},
+  ): AsyncIterable<QueryRow> {
+    return this.managed(() => this.scanCollectionRows(collection, options));
+  }
+
+  public scanIndex(
+    collection: string,
+    index: string,
+    options: SecondaryIndexScanOptions = {},
+  ): AsyncIterable<QueryRow> {
+    return this.managed(() => this.scanIndexRows(collection, index, options));
+  }
+
+  public close(
+    reason: unknown = new Error("Query context is closed"),
+    cleanup?: () => Promise<unknown>,
+  ): void {
     if (!this.active) return;
+
     this.active = false;
+    clearTimeout(this.timer);
+    this.cancellationReturns.clear();
+
     const cache = this.nodeCache.getMetrics();
+
     this.metrics.cacheHits = cache.hits;
     this.metrics.cacheMisses = cache.misses;
     this.metrics.durationMs = performance.now() - this.startedAt;
+
     this.controller.abort(reason);
     this.nodeCache.clear();
-    this.options.onClose?.();
+    this.writes.clear();
+    this.catalogValue.clear();
+
+    this.snapshotValue = undefined;
+
+    while (this.iterators > 0) this.end();
+
+    const finish = () => {
+      this.resources.close();
+      this.options.onClose?.();
+    };
+
+    if (cleanup) {
+      const pending = Promise.resolve().then(cleanup);
+
+      this.options.onPendingCleanup?.(pending);
+
+      pending.then(finish, (error) => {
+        this.options.onCleanupFailure?.(error);
+        finish();
+      });
+    } else finish();
   }
 
   public cancel(reason: unknown = new Error("Query cancelled")): void {
-    this.close(reason);
+    const callbacks = [...this.cancellationReturns];
+    this.cancellationReturns.clear();
+    this.close(
+      reason,
+      callbacks.length
+        ? async () => {
+            const results = await Promise.allSettled(
+              callbacks.map((callback) => Promise.resolve().then(callback)),
+            );
+
+            const errors = results
+              .filter((result) => result.status == "rejected")
+              .map((result) => result.reason);
+
+            if (errors.length) throw new AggregateError(errors, "Query iterator cleanup failed");
+          }
+        : undefined,
+    );
   }
 
   public assertActive(): void {
+    this.options.assertAccess?.();
     if (!this.active) throw this.controller.signal.reason ?? new Error("Query context is closed");
   }
 
   private begin(): void {
     this.assertActive();
+    this.iteratorReservations.push(this.resources.reserve({ iterators: this.iterators ? 1 : 0 }));
     this.iterators++;
     this.options.onIteratorStart?.();
   }
 
   private end(): void {
-    if (this.iterators > 0) this.iterators--;
+    if (this.iterators == 0) return;
+    this.iterators--;
+    this.iteratorReservations.pop()?.release();
     this.options.onIteratorEnd?.();
   }
 
@@ -171,7 +334,7 @@ export class QueryContext {
     return result;
   }
 
-  public async *scanCollection(
+  private async *scanCollectionRows(
     collection: string,
     options: {
       readonly direction?: "ASC" | "DESC";
@@ -299,6 +462,8 @@ export class QueryContext {
       (bounds.lte == null || compareBytes(key, bounds.lte) <= 0);
 
     const result: Array<{ key: Uint8Array; row: QueryRow }> = [];
+    let bytes = 0;
+    const memory = this.resources.reserve({});
 
     for (const [id, write] of this.pendingFor(collection)) {
       if (write.type != "put") continue;
@@ -323,13 +488,18 @@ export class QueryContext {
 
       const key = encodeSecondaryKey(values, index.unique ? undefined : id, orders);
 
-      if (matches(key)) result.push({ key, row: { id, document } });
+      if (matches(key)) {
+        bytes += estimateBytes(document) + key.byteLength + id.length * 2;
+
+        memory.resize({ workingBytes: bytes });
+        result.push({ key, row: { id, document } });
+      }
     }
 
     return result;
   }
 
-  public async *scanIndex(
+  private async *scanIndexRows(
     collection: string,
     indexName: string,
     options: SecondaryIndexScanOptions = {},
@@ -350,7 +520,11 @@ export class QueryContext {
 
         const parts = indexFields(index);
         const bounds = secondaryIndexBounds(index, options);
+
         const entries: Array<{ key: Uint8Array; row: QueryRow }> = [];
+        const memory = this.resources.reserve({});
+
+        let bytes = 0;
 
         for await (const row of this.scanCollection(collection, { signal: options.signal })) {
           const values = parts.map((part) =>
@@ -370,8 +544,11 @@ export class QueryContext {
             (bounds.gte == null || compareBytes(key, bounds.gte) >= 0) &&
             (bounds.lt == null || compareBytes(key, bounds.lt) < 0) &&
             (bounds.lte == null || compareBytes(key, bounds.lte) <= 0)
-          )
+          ) {
+            bytes += estimateBytes(row) + key.byteLength;
+            memory.resize({ workingBytes: bytes });
             entries.push({ key, row });
+          }
         }
 
         const limit = options.limit ?? Number.MAX_SAFE_INTEGER;

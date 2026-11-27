@@ -186,16 +186,18 @@ describe("migration failure and recovery", () => {
       const result = await put(key, bytes, options);
       if (fault && key.endsWith("/manifest")) {
         fault = false;
-        // Simulate another connection checkpointing before recovery can inspect the commit chain.
-        const other = new DuraxisDatabase({ storage });
-        await other.checkpointHistory();
-        await other.close();
         throw new Error("lost publication response");
       }
       return result;
     };
     await new MigrationRunner(db, [artifact()]).up();
-    expect((await new MigrationRunner(db, [artifact()]).status()).applied).toHaveLength(1);
+    // Maintenance now rejects active publication. Checkpoint after it drains,
+    // then verify the durable migration receipt using a fresh connection.
+    const other = new DuraxisDatabase({ storage });
+    await other.checkpointHistory();
+    expect((await new MigrationRunner(other, [artifact()]).status()).applied).toHaveLength(1);
+    await other.close();
+    await db.close();
   });
   it("stops on an unknown outcome without assuming rollback or rerunning callbacks", async () => {
     const storage = new MemoryStorageDriver();

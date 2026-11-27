@@ -11,7 +11,13 @@ import {
   type SchemaSnapshot,
   type SchemaPlan,
 } from "@duraxis/migrations";
-import type { CollectionDefinition, DuraxisDatabase } from "@duraxis/core";
+import {
+  CommitOutcomeUnknownError,
+  ResourceExhaustedError,
+  OperationCancelledError,
+  type CollectionDefinition,
+  type DuraxisDatabase,
+} from "@duraxis/core";
 import { loadConfig, readJSON, type DuraxisConnectionConfig } from "./config.js";
 import {
   artifactChecksum,
@@ -503,7 +509,16 @@ export async function runCLI(args: readonly string[], io: CLIIO = {}): Promise<n
 
     return 0;
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message =
+      error instanceof CommitOutcomeUnknownError
+        ? `Commit outcome is unknown for transaction ${error.transactionId}. Reconcile migration status before retrying; do not repeat external side effects.`
+        : error instanceof ResourceExhaustedError
+          ? error.message
+          : error instanceof OperationCancelledError
+            ? "Duraxis operation cancelled or deadline exceeded. Check configured resource deadlines and storage health."
+            : error instanceof Error
+              ? error.message
+              : String(error);
 
     errorOut(jsonErrors ? JSON.stringify({ error: message }) : message);
 

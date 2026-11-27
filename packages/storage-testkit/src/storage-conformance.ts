@@ -84,6 +84,51 @@ export function defineStorageConformanceSuite(options: ConformanceOptions): void
       });
     });
 
+    describe("incremental listing and resource contracts", () => {
+      it("streams listings with bounded pages and supports early termination", async () => {
+        if (!driver.iterate) return; // Optional capability for third-party legacy drivers.
+        for (let i = 0; i < 5; i++)
+          await driver.put(`stream/${i}`, encode(String(i)), createOnly());
+        const seen: string[] = [];
+        for await (const entry of driver.iterate("stream/", { pageSize: 2 })) seen.push(entry.key);
+        expect([...new Set(seen)].sort()).toEqual([
+          "stream/0",
+          "stream/1",
+          "stream/2",
+          "stream/3",
+          "stream/4",
+        ]);
+        const iterator = driver.iterate("stream/", { pageSize: 1 })[Symbol.asyncIterator]();
+        expect((await iterator.next()).done).toBe(false);
+        await iterator.return?.();
+        const aborted = new AbortController();
+        aborted.abort(new Error("listing aborted"));
+        await expect(
+          driver.iterate("stream/", { signal: aborted.signal })[Symbol.asyncIterator]().next(),
+        ).rejects.toThrow();
+        await expect(
+          driver.iterate("stream/", { pageSize: 0 })[Symbol.asyncIterator]().next(),
+        ).rejects.toThrow();
+      });
+      it("rejects invalid conditional mutation discriminants", async () => {
+        await driver.put("conditional", encode("original"), createOnly());
+        await expect(
+          driver.put("conditional", encode("overwrite"), {
+            condition: { type: "overwrite" } as never,
+          }),
+        ).rejects.toThrow();
+        expect(decode((await driver.get("conditional"))!.data)).toBe("original");
+      });
+      it("enforces caller read byte bounds and cancellation", async () => {
+        if (driver.capabilities?.boundedReads !== true) return;
+        await driver.put("bounded-read", encode("large value"), createOnly());
+        await expect(driver.get("bounded-read", { maxBytes: 1 })).rejects.toThrow();
+        const abort = new AbortController();
+        abort.abort(new Error("read aborted"));
+        await expect(driver.get("bounded-read", { signal: abort.signal })).rejects.toThrow();
+      });
+    });
+
     describe("conditional creation", () => {
       it("creates an absent object", async () => {
         const result = await driver.put("users/1", encode("first"), createOnly());

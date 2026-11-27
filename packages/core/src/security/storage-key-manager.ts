@@ -21,7 +21,11 @@ export class StorageKeyManager {
   private readonly commitPattern: RegExp;
 
   public constructor(namespace = "__duraxis/v1") {
-    if (!/^[a-zA-Z0-9_-]+(?:\/[a-zA-Z0-9_-]+)*$/.test(namespace))
+    if (
+      typeof namespace != "string" ||
+      Buffer.byteLength(namespace) > 256 ||
+      !/^[a-zA-Z0-9_-]+(?:\/[a-zA-Z0-9_-]+)*$/.test(namespace)
+    )
       throw new Error("Invalid Duraxis storage namespace");
 
     this.namespace = namespace;
@@ -39,6 +43,7 @@ export class StorageKeyManager {
     );
 
     this.commitPattern = new RegExp(`^${escapeRegex(this.commitPrefix)}(${UUID})-([a-f0-9]{64})$`);
+    Object.freeze(this);
   }
 
   public validateLogicalKey(key: string): void {

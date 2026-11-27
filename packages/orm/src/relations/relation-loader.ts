@@ -1,4 +1,4 @@
-import type { LogicalQuery, QueryRow } from "@duraxis/core";
+import type { LogicalQuery, QueryRow, DuraxisDatabase } from "@duraxis/core";
 import { EntityMapper } from "../mapping/entity-mapper.js";
 import type { EntityMetadata, RelationMetadata } from "../metadata/entity-metadata.js";
 import type { Relations } from "../query/find-options.js";
@@ -13,8 +13,6 @@ interface RelationTree {
 }
 
 export class RelationLoader<TEntity extends object> {
-  #loaded = 0;
-
   public constructor(
     private readonly metadata: EntityMetadata<TEntity>,
     private readonly runtime: RepositoryRuntime,
@@ -26,8 +24,29 @@ export class RelationLoader<TEntity extends object> {
     signal?: AbortSignal,
   ): Promise<readonly TEntity[]> {
     if (!requested || entities.length == 0) return entities;
-    await this.loadLevel(this.metadata, entities, requested as RelationTree, signal, 0, new Set());
-    return entities;
+
+    const state = {
+      loaded: 0,
+      budget: this.runtime.database.createMaterializationBudget<object>(),
+    };
+
+    try {
+      for (const entity of entities) state.budget.add(entity);
+
+      await this.loadLevel(
+        this.metadata,
+        entities,
+        requested as RelationTree,
+        signal,
+        0,
+        new Set(),
+        state,
+      );
+      
+      return entities;
+    } finally {
+      state.budget.close();
+    }
   }
 
   private async loadLevel<TCurrent extends object>(
@@ -37,6 +56,7 @@ export class RelationLoader<TEntity extends object> {
     signal: AbortSignal | undefined,
     depth: number,
     path: ReadonlySet<string>,
+    state: { loaded: number; budget: ReturnType<DuraxisDatabase["createMaterializationBudget"]> },
   ): Promise<void> {
     if (depth >= MAX_DEPTH) throw new Error(`Relation depth exceeds ${MAX_DEPTH}`);
 
@@ -55,15 +75,24 @@ export class RelationLoader<TEntity extends object> {
 
       const related = await this.loadRelation(metadata, entities, relation, signal);
 
-      this.#loaded += related.length;
+      state.loaded += related.length;
+      for (const entity of related) state.budget.add(entity);
 
-      if (this.#loaded > MAX_RELATED_ENTITIES)
+      if (state.loaded > MAX_RELATED_ENTITIES)
         throw new Error("Related entity expansion limit exceeded");
 
       if (nested !== true && related.length) {
         const target = this.runtime.registry.get(relation.target);
 
-        await this.loadLevel(target, related, nested, signal, depth + 1, new Set([...path, edge]));
+        await this.loadLevel(
+          target,
+          related,
+          nested,
+          signal,
+          depth + 1,
+          new Set([...path, edge]),
+          state,
+        );
       }
     }
   }
@@ -186,25 +215,33 @@ export class RelationLoader<TEntity extends object> {
     const all = [...values];
     const rows: QueryRow[] = [];
 
-    for (let offset = 0; offset < all.length; offset += BATCH_SIZE) {
-      signal?.throwIfAborted();
+    const memory = this.runtime.database.createMaterializationBudget<QueryRow>();
+    try {
+      for (let offset = 0; offset < all.length; offset += BATCH_SIZE) {
+        signal?.throwIfAborted();
 
-      const batch = all.slice(offset, offset + BATCH_SIZE);
+        const batch = all.slice(offset, offset + BATCH_SIZE);
 
-      if (!batch.length) continue;
-      const query: LogicalQuery = {
-        collection,
-        where: { type: "in", field, values: batch },
-      };
+        if (!batch.length) continue;
+        const query: LogicalQuery = {
+          collection,
+          where: { type: "in", field, values: batch },
+        };
 
-      const source = this.runtime.transaction
-        ? this.runtime.transaction.query(query, { signal })
-        : this.runtime.database.query(query, { signal });
+        const source = this.runtime.transaction
+          ? this.runtime.transaction.query(query, { signal })
+          : this.runtime.database.query(query, { signal });
 
-      for await (const row of source) rows.push(row);
+        for await (const row of source) {
+          memory.add(row);
+          rows.push(row);
+        }
+      }
+
+      return rows;
+    } finally {
+      memory.close();
     }
-
-    return rows;
   }
 
   private values(entities: readonly object[], property: string): Set<string> {

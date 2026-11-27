@@ -16,7 +16,6 @@ const APPLICATION_ID_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9._:/-]{0,126}[A-Za-z0-9
 const PROCESS_IDENTITY_PATTERN = /^(?:linux:(?:pid:\[\d+\]|unavailable)|[a-z0-9]+:unverified)$/;
 const MAX_METADATA_BYTES = 4096;
 
-// Explicit allowlist. Unknown, remote, and userspace filesystems fail closed.
 const LINUX_LOCAL_FILESYSTEMS = new Set([
   0x0000ef53, // ext2/3/4
   0x01021994, // tmpfs
@@ -28,9 +27,7 @@ const LINUX_LOCAL_FILESYSTEMS = new Set([
 ]);
 
 export interface OwnershipRecoveryOptions {
-  /** Defaults to manual. dead-process is restricted to validated local Linux environments. */
   readonly mode: "manual" | "dead-process";
-  /** Stable application identity across restarts. It is not an owner token or a secret. */
   readonly applicationId?: string;
 }
 
@@ -607,6 +604,25 @@ export class DirectoryOwnership {
       }
       this.#lockHandle = created.handle;
       this.#owned = true;
+    });
+  }
+
+  public async verify(): Promise<void> {
+    if (!this.#owned) throw ownershipConflict("Storage directory is not owned");
+
+    await withGuard(this.root, async () => {
+      const observed = await observe(join(this.root, LOCK_FILE));
+
+      if (!observed) throw ownershipConflict("Storage owner lock is missing");
+
+      try {
+        if (parseOwner(observed.bytes).ownerId != this.#ownerId)
+          throw ownershipConflict("Storage ownership changed");
+        
+        await assertObservedUnchanged(observed);
+      } finally {
+        await observed.handle.close();
+      }
     });
   }
 

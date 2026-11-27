@@ -157,3 +157,7 @@ For S3, coordinate application writers separately: manifest CAS prevents competi
 publications but does not put application replicas into maintenance mode. Stop
 older incompatible replicas before migration and start compatible versions after
 successful validation; use staged compatible schema releases for rolling upgrades.
+
+## Production resource and lifecycle limits
+
+See the [production hardening guide](../../docs/PRODUCTION-HARDENING.md) for bounded defaults, cancellation, verified maintenance, tenant trust boundaries, encrypted cursors, upgrade instructions and remaining pilot limitations. Core rejects storage adapters without bounded-read capability; destructive shared-storage garbage collection is unsupported.

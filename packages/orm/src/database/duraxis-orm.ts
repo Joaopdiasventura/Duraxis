@@ -19,6 +19,8 @@ export class DuraxisORM {
   readonly #repositories = new Map<Function, unknown>();
   #lifecycle: Lifecycle = "new";
   #initialization?: Promise<void>;
+  #closing?: Promise<void>;
+  #resourcesClosed = false;
 
   public constructor(private readonly options: DuraxisOrmOptions) {
     this.#registry = new MetadataRegistry(options.entities).finalize();
@@ -96,18 +98,31 @@ export class DuraxisORM {
     }
   }
 
-  public async close(): Promise<void> {
-    if (this.#lifecycle == "closed") return;
+  public resolveCommitOutcome(transactionId: string) {
+    return this.options.database.resolveCommitOutcome(transactionId);
+  }
 
-    const initialization = this.#initialization;
-
-    if (initialization) await initialization.catch(() => undefined);
+  public close(): Promise<void> {
+    if (this.#resourcesClosed) return Promise.resolve();
+    if (this.#closing) return this.#closing;
 
     this.#lifecycle = "closed";
     this.#repositories.clear();
 
-    if (this.options.closeDatabase || this.options.closeStorage)
-      await this.options.database.close({ closeStorage: this.options.closeStorage ?? false });
+    this.#closing = (async () => {
+      if (this.#initialization) await this.#initialization.catch(() => undefined);
+
+      if (this.options.closeDatabase || this.options.closeStorage)
+        await this.options.database.close({ closeStorage: this.options.closeStorage ?? false });
+
+      this.#resourcesClosed = true;
+    })();
+
+    this.#closing.catch(() => {
+      this.#closing = undefined;
+    });
+
+    return this.#closing;
   }
 
   public get metadata(): MetadataRegistry {

@@ -36,8 +36,9 @@ export class RuleBasedPlanner {
   public plan(
     query: LogicalQuery,
     catalog: ReadonlyMap<string, CollectionDefinition>,
+    limits?: { readonly maxPredicateDepth: number; readonly maxPredicateNodes: number },
   ): PhysicalPlan {
-    const schema = validateQuery(query, catalog);
+    const schema = validateQuery(query, catalog, limits);
     const selected = this.choose(query, schema, query.where);
 
     const required = query.orderBy ?? [];

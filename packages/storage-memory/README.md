@@ -32,3 +32,7 @@ Não há persistência entre processos nem coordenação distribuída. Requer No
 distribuído em ESM, CommonJS e TypeScript.
 
 Release automation verification.
+
+## Production resource and lifecycle limits
+
+See the [production hardening guide](../../docs/PRODUCTION-HARDENING.md) for bounded defaults, cancellation, verified maintenance, tenant trust boundaries, encrypted cursors, upgrade instructions and remaining pilot limitations. Core rejects storage adapters without bounded-read capability; destructive shared-storage garbage collection is unsupported.

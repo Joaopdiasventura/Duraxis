@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import {
   mkdir,
   open,
   readFile,
-  readdir,
+  opendir,
   realpath,
   rename,
   rm,
@@ -14,6 +14,7 @@ import {
 } from "node:fs/promises";
 import {
   assertStorageKey,
+  assertWriteCondition,
   StorageError,
   type DeleteOptions,
   type DeleteResult,
@@ -25,7 +26,7 @@ import {
   type WriteResult,
 } from "@duraxis/storage";
 import {
-  decodeJournal,
+  replayJournal,
   decodePhysicalObject,
   encodeJournalFrame,
   encodePhysicalObject,
@@ -48,6 +49,10 @@ const PREVIOUS_JOURNAL = "journal.previous";
 const NEXT_JOURNAL = "journal.next";
 const OBJECTS_DIRECTORY = "objects";
 
+const MAX_KEY_BYTES = 4096;
+const MAX_OBJECT_BYTES = 256 * 1024 * 1024;
+const MAX_JOURNAL_BYTES = 1024 * 1024 * 1024;
+
 export type { OwnershipRecoveryOptions, RecoverOwnershipOptions } from "./ownership.js";
 
 export type DiskFaultPoint =
@@ -69,6 +74,8 @@ export interface AsyncDiskStorageOptions {
   readonly maxKeyBytes?: number;
   readonly maxObjectBytes?: number;
   readonly maxJournalBytes?: number;
+  readonly maxMetadataBytes?: number;
+  readonly maxQueuedOperations?: number;
   readonly nodeCacheHint?: number;
   readonly faultInjector?: (
     point: DiskFaultPoint,
@@ -112,21 +119,26 @@ async function exists(path: string): Promise<boolean> {
 
 async function writeAll(handle: FileHandle, bytes: Uint8Array, position = 0): Promise<void> {
   let offset = 0;
+
   while (offset < bytes.byteLength) {
     const result = await handle.write(bytes, offset, bytes.byteLength - offset, position + offset);
+
     if (result.bytesWritten <= 0)
       throw new StorageError("Disk write made no progress", "UNAVAILABLE");
+
     offset += result.bytesWritten;
   }
 }
 
 async function syncAndClose(handle: FileHandle, context: string): Promise<void> {
   let syncFailure: unknown;
+
   try {
     await handle.sync();
   } catch (error) {
     syncFailure = error;
   }
+
   try {
     await handle.close();
   } catch (closeFailure) {
@@ -135,12 +147,15 @@ async function syncAndClose(handle: FileHandle, context: string): Promise<void> 
         [syncFailure, closeFailure],
         `${context} sync and close both failed`,
       );
+
     throw closeFailure;
   }
+
   if (syncFailure != null) throw syncFailure;
 }
 
 export class AsyncDiskStorageDriver implements StorageDriver {
+  public readonly capabilities = Object.freeze({ boundedReads: true });
   private static readonly activeDirectories = new Set<string>();
 
   private readonly entries = new Map<string, StoredMetadata>();
@@ -154,6 +169,10 @@ export class AsyncDiskStorageDriver implements StorageDriver {
     bytesWritten: 0,
     synchronizationWaitMs: 0,
   };
+
+  private metadataBytes = 0;
+  private queuedOperations = 0;
+
   private operationTail: Promise<void> = Promise.resolve();
   private journal!: FileHandle;
   private journalBytes = 0;
@@ -179,31 +198,45 @@ export class AsyncDiskStorageDriver implements StorageDriver {
   public static async open(options: AsyncDiskStorageOptions): Promise<AsyncDiskStorageDriver> {
     if (!options || typeof options.directory != "string" || options.directory.trim() == "")
       throw new TypeError("A storage directory is required");
-    const maxKeyBytes = options.maxKeyBytes ?? 4096;
-    const maxObjectBytes = options.maxObjectBytes ?? 256 * 1024 * 1024;
-    const maxJournalBytes = options.maxJournalBytes ?? 1024 * 1024 * 1024;
+
+    const maxKeyBytes = options.maxKeyBytes ?? MAX_KEY_BYTES;
+    const maxObjectBytes = options.maxObjectBytes ?? MAX_OBJECT_BYTES;
+    const maxJournalBytes = options.maxJournalBytes ?? MAX_JOURNAL_BYTES;
+
     const ownershipRecovery = normalizeOwnershipRecovery(options.ownershipRecovery);
+
     if (!Number.isSafeInteger(maxKeyBytes) || maxKeyBytes < 64 || maxKeyBytes > 64 * 1024)
       throw new RangeError("Invalid maximum storage key size");
+
     if (
       !Number.isSafeInteger(maxObjectBytes) ||
       maxObjectBytes < 0 ||
-      maxObjectBytes > 1024 * 1024 * 1024
+      maxObjectBytes > MAX_JOURNAL_BYTES
     )
       throw new RangeError("Invalid maximum object size");
+
     if (!Number.isSafeInteger(maxJournalBytes) || maxJournalBytes < 1024 * 1024)
       throw new RangeError("Invalid maximum journal size");
 
+    for (const value of [options.maxMetadataBytes, options.maxQueuedOperations])
+      if (value !== undefined && (!Number.isSafeInteger(value) || value < 1))
+        throw new RangeError("Invalid storage resource limit");
+
     const requested = resolve(options.directory);
+
     await mkdir(requested, { recursive: true });
+
     const root = await realpath(requested);
     const registryKey = process.platform == "win32" ? root.toLocaleLowerCase("en-US") : root;
+
     if (this.activeDirectories.has(registryKey))
       throw new StorageError(
         "Storage directory is already owned by this process",
         "OWNERSHIP_CONFLICT",
       );
+
     this.activeDirectories.add(registryKey);
+
     const driver = new AsyncDiskStorageDriver(root, registryKey, {
       ...options,
       directory: root,
@@ -212,6 +245,7 @@ export class AsyncDiskStorageDriver implements StorageDriver {
       maxJournalBytes,
       ownershipRecovery,
     });
+
     try {
       await driver.initialize();
       return driver;
@@ -232,10 +266,13 @@ export class AsyncDiskStorageDriver implements StorageDriver {
 
   public static async recoverAbandonedOwnership(options: RecoverOwnershipOptions): Promise<void> {
     validateManualRecoveryConfirmation(options.confirmation);
+
     const root = await realpath(resolve(options.directory));
     const registryKey = process.platform == "win32" ? root.toLocaleLowerCase("en-US") : root;
+
     if (this.activeDirectories.has(registryKey))
       throw new StorageError("Cannot recover ownership held by this process", "OWNERSHIP_CONFLICT");
+
     await manuallyRecoverOwnership(root);
   }
 
@@ -257,47 +294,73 @@ export class AsyncDiskStorageDriver implements StorageDriver {
     await this.ownership.acquire();
     await mkdir(join(this.root, OBJECTS_DIRECTORY), { recursive: true });
     await this.recoverJournalRotation();
+
     const journalPath = join(this.root, JOURNAL_FILE);
+
     if (!(await exists(journalPath))) {
       const created = await open(journalPath, "wx", 0o600);
       await syncAndClose(created, "New storage journal");
       await this.syncDirectory(this.root);
     }
-    const bytes = await readFile(journalPath);
-    if (bytes.byteLength > this.options.maxJournalBytes)
-      throw new StorageError("Storage journal exceeds configured limit", "RESOURCE_LIMIT");
-    const decoded = decodeJournal(bytes);
-    for (const frame of decoded.frames) {
-      this.validateKey(frame.key);
-      this.sequence = frame.sequence;
-      if (frame.op == "put")
-        this.entries.set(frame.key, {
-          version: frame.version,
-          createdAt: frame.createdAt,
-          size: frame.size,
-          digest: frame.digest,
-        });
-      else this.entries.delete(frame.key);
+
+    const input = await open(journalPath, "r");
+    let decoded: Awaited<ReturnType<typeof replayJournal>>;
+
+    try {
+      decoded = await replayJournal(input, this.options.maxJournalBytes, (frame) => {
+        this.validateKey(frame.key);
+        this.sequence = frame.sequence;
+
+        if (frame.op == "put")
+          this.setEntry(frame.key, {
+            version: frame.version,
+            createdAt: frame.createdAt,
+            size: frame.size,
+            digest: frame.digest,
+          });
+        else this.deleteEntry(frame.key);
+      });
+    } finally {
+      await input.close();
     }
+
     if (decoded.incompleteTail) {
       await truncate(journalPath, decoded.validBytes);
       const repaired = await open(journalPath, "r+");
       await syncAndClose(repaired, "Repaired storage journal");
     }
+
     this.journalBytes = decoded.validBytes;
     this.journal = await open(journalPath, "r+");
+
     await this.assertCurrentObjectsExist();
     await this.cleanupPhysicalObjects();
   }
 
+  private setEntry(key: string, value: StoredMetadata): void {
+    const size = this.entries.has(key) ? 0 : key.length * 2 + 256;
+
+    if (this.metadataBytes + size > (this.options.maxMetadataBytes ?? 64 * 1024 * 1024))
+      throw new StorageError("Resident storage metadata limit exceeded", "RESOURCE_LIMIT");
+
+    this.metadataBytes += size;
+    this.entries.set(key, value);
+  }
+
+  private deleteEntry(key: string): void {
+    if (this.entries.delete(key)) this.metadataBytes -= key.length * 2 + 256;
+  }
+
   private validateKey(key: string): void {
     assertStorageKey(key);
+
     if (Buffer.byteLength(key, "utf8") > this.options.maxKeyBytes)
       throw new StorageError("Storage key exceeds configured byte limit", "INVALID_KEY");
   }
 
   private assertUsable(): void {
     if (this.closed || this.closing) throw new StorageError("Storage driver is closed", "CLOSED");
+
     if (this.poisoned)
       throw new StorageError(
         "Storage outcome is unknown; close and reopen before continuing",
@@ -307,30 +370,54 @@ export class AsyncDiskStorageDriver implements StorageDriver {
 
   private async exclusive<T>(operation: () => Promise<T>): Promise<T> {
     this.assertUsable();
+
+    if (this.queuedOperations >= (this.options.maxQueuedOperations ?? 256))
+      throw new StorageError("Storage operation admission limit exceeded", "RESOURCE_LIMIT");
+
+    this.queuedOperations++;
+
     const before = performance.now();
     const previous = this.operationTail;
+
     let release!: () => void;
+
     this.operationTail = new Promise<void>((resolve) => {
       release = resolve;
     });
+
     await previous;
     this.metrics.synchronizationWaitMs += performance.now() - before;
+
     try {
       this.assertUsable();
       return await operation();
     } finally {
+      this.queuedOperations--;
       release();
     }
   }
 
-  public get(key: string): Promise<StorageObject | null> {
+  public get(
+    key: string,
+    options: { readonly signal?: AbortSignal; readonly maxBytes?: number } = {},
+  ): Promise<StorageObject | null> {
     return this.exclusive(async () => {
       this.validateKey(key);
+
+      options.signal?.throwIfAborted();
       this.metrics.reads++;
+
       const metadata = this.entries.get(key);
+
       if (!metadata) return null;
+
+      if (metadata.size > (options.maxBytes ?? this.options.maxObjectBytes))
+        throw new StorageError("Storage read exceeds byte limit", "RESOURCE_LIMIT");
+
       const path = this.objectPath(key, metadata.version);
+
       let info;
+
       try {
         info = await stat(path);
       } catch (error) {
@@ -340,10 +427,14 @@ export class AsyncDiskStorageDriver implements StorageDriver {
           });
         throw error;
       }
+
       if (info.size > this.options.maxObjectBytes + 32 * 1024)
         throw new StorageError("Physical object exceeds configured size", "CORRUPTION");
-      const physical = await readFile(path);
+
+      const physical = await readFile(path, { signal: options.signal });
+
       this.metrics.bytesRead += physical.byteLength;
+
       return { data: decodePhysicalObject(physical, key, metadata), version: metadata.version };
     });
   }
@@ -351,43 +442,68 @@ export class AsyncDiskStorageDriver implements StorageDriver {
   public put(key: string, data: Uint8Array, options: WriteOptions): Promise<WriteResult> {
     return this.exclusive(async () => {
       this.validateKey(key);
+
       if (!(data instanceof Uint8Array)) throw new TypeError("Storage data must be a Uint8Array");
+
       if (data.byteLength > this.options.maxObjectBytes)
         throw new StorageError("Storage object exceeds configured byte limit", "RESOURCE_LIMIT");
+
+      assertWriteCondition(options?.condition);
+
       const current = this.entries.get(key);
+
       if (
         options.condition.type == "if-absent"
           ? current != null
           : current == null || current.version != options.condition.version
       )
         return { success: false, reason: "conflict" };
+
+      if (
+        !this.entries.has(key) &&
+        this.metadataBytes + key.length * 2 + 256 >
+          (this.options.maxMetadataBytes ?? 64 * 1024 * 1024)
+      )
+        throw new StorageError("Resident storage metadata limit exceeded", "RESOURCE_LIMIT");
+
       this.metrics.writes++;
+
       const metadata: StoredMetadata = {
         version: randomUUID(),
         createdAt: Date.now(),
         size: data.byteLength,
         digest: sha256(data),
       };
+
       const physical = encodePhysicalObject(key, metadata, data);
       const finalPath = this.objectPath(key, metadata.version);
       const parent = dirname(finalPath);
+
       await mkdir(parent, { recursive: true });
+
       const temporary = join(parent, `.${metadata.version}.${randomUUID()}.tmp`);
+
       let published = false;
+
       try {
         const handle = await open(temporary, "wx", 0o600);
+
         try {
           await writeAll(handle, physical);
           await handle.sync();
         } finally {
           await handle.close();
         }
+
         await this.fault("after-object-sync", { operation: "put", key });
         await rename(temporary, finalPath);
+
         published = true;
+
         await this.fault("after-object-publish", { operation: "put", key });
         await this.syncDirectory(parent);
         await this.fault("after-object-directory-sync", { operation: "put", key });
+
         const frame: JournalPayload = {
           format: 1,
           sequence: this.sequence + 1,
@@ -398,11 +514,15 @@ export class AsyncDiskStorageDriver implements StorageDriver {
           size: metadata.size,
           digest: metadata.digest,
         };
+
         await this.append(frame);
-        this.entries.set(key, metadata);
+
+        this.setEntry(key, metadata);
         this.sequence = frame.sequence;
         this.metrics.bytesWritten += physical.byteLength;
+
         if (current) await this.removeObsolete(this.objectPath(key, current.version));
+
         return { success: true, version: metadata.version };
       } catch (error) {
         if (!published) await this.removeObsolete(temporary);
@@ -414,24 +534,86 @@ export class AsyncDiskStorageDriver implements StorageDriver {
   public delete(key: string, options: DeleteOptions): Promise<DeleteResult> {
     return this.exclusive(async () => {
       this.validateKey(key);
+
+      assertWriteCondition(options?.condition);
+
       const current = this.entries.get(key);
+
       if (options.condition.type == "if-absent")
         return current ? { success: false, reason: "conflict" } : { success: true };
+
       if (!current || current.version != options.condition.version)
         return { success: false, reason: "conflict" };
+
       this.metrics.deletes++;
+
       const frame: JournalPayload = {
         format: 1,
         sequence: this.sequence + 1,
         op: "delete",
         key,
       };
+
       await this.append(frame);
-      this.entries.delete(key);
+
+      this.deleteEntry(key);
       this.sequence = frame.sequence;
+
       await this.removeObsolete(this.objectPath(key, current.version));
+
       return { success: true };
     });
+  }
+
+  public verifyExclusiveOwnership(): Promise<void> {
+    return this.exclusive(() => this.ownership.verify());
+  }
+  public async *iterate(
+    prefix: string,
+    options: { readonly pageSize?: number; readonly signal?: AbortSignal } = {},
+  ): AsyncIterable<StorageObjectInfo> {
+    if (typeof prefix != "string" || prefix.includes("\0"))
+      throw new StorageError("Invalid storage prefix", "INVALID_KEY");
+
+    const size = options.pageSize ?? 256;
+
+    if (!Number.isSafeInteger(size) || size < 1 || size > 1000)
+      throw new RangeError("Invalid listing page size");
+
+    const iterator = this.entries.entries();
+
+    let done = false;
+
+    while (!done) {
+      options.signal?.throwIfAborted();
+
+      const page = await this.exclusive(async () => {
+        const entries: StorageObjectInfo[] = [];
+
+        let visited = 0;
+
+        while (visited++ < size) {
+          const next = iterator.next();
+
+          if (next.done) {
+            done = true;
+            break;
+          }
+
+          const [key, value] = next.value;
+
+          if (key.startsWith(prefix))
+            entries.push({ key, version: value.version, createdAt: value.createdAt });
+        }
+
+        return entries;
+      });
+
+      for (const entry of page) {
+        options.signal?.throwIfAborted();
+        yield entry;
+      }
+    }
   }
 
   public list(prefix: string): Promise<readonly StorageObjectInfo[]> {
@@ -442,26 +624,40 @@ export class AsyncDiskStorageDriver implements StorageDriver {
         Buffer.byteLength(prefix, "utf8") > this.options.maxKeyBytes
       )
         throw new StorageError("Invalid storage prefix", "INVALID_KEY");
+
       this.metrics.lists++;
-      return [...this.entries]
-        .filter(([key]) => key.startsWith(prefix))
-        .map(([key, value]) => ({ key, version: value.version, createdAt: value.createdAt }))
-        .sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+
+      const result: StorageObjectInfo[] = [];
+
+      for (const [key, value] of this.entries)
+        if (key.startsWith(prefix)) {
+          if (result.length >= 100_000)
+            throw new StorageError(
+              "Legacy listing limit exceeded; use iterate()",
+              "RESOURCE_LIMIT",
+            );
+          result.push({ key, version: value.version, createdAt: value.createdAt });
+        }
+
+      return result.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
     });
   }
 
   private async append(frame: JournalPayload): Promise<void> {
     const encoded = encodeJournalFrame(frame);
+
     if (this.journalBytes + encoded.byteLength > this.options.maxJournalBytes)
       throw new StorageError(
         "Storage journal limit reached; compact before writing",
         "RESOURCE_LIMIT",
       );
+
     try {
       await writeAll(this.journal, encoded, this.journalBytes);
       await this.fault("after-journal-write", { operation: frame.op, key: frame.key });
       await this.journal.sync();
       await this.fault("after-journal-sync", { operation: frame.op, key: frame.key });
+
       this.journalBytes += encoded.byteLength;
       this.metrics.bytesWritten += encoded.byteLength;
     } catch (cause) {
@@ -478,15 +674,17 @@ export class AsyncDiskStorageDriver implements StorageDriver {
         const nextPath = join(this.root, NEXT_JOURNAL);
         const previousPath = join(this.root, PREVIOUS_JOURNAL);
         const currentPath = join(this.root, JOURNAL_FILE);
+
         await this.removeObsolete(nextPath);
         await this.removeObsolete(previousPath);
+
         const next = await open(nextPath, "wx", 0o600);
+
         let offset = 0;
         let sequence = 0;
+
         try {
-          for (const [key, metadata] of [...this.entries].sort(([a], [b]) =>
-            a < b ? -1 : a > b ? 1 : 0,
-          )) {
+          for (const [key, metadata] of this.entries) {
             const bytes = encodeJournalFrame({
               format: 1,
               sequence: ++sequence,
@@ -497,21 +695,34 @@ export class AsyncDiskStorageDriver implements StorageDriver {
               size: metadata.size,
               digest: metadata.digest,
             });
+
+            if (offset + bytes.byteLength > this.options.maxJournalBytes)
+              throw new StorageError(
+                "Compacted journal exceeds configured limit",
+                "RESOURCE_LIMIT",
+              );
+
             await writeAll(next, bytes, offset);
             offset += bytes.byteLength;
           }
+
           await next.sync();
         } finally {
           await next.close();
         }
+
         await this.journal.close();
+
         await rename(currentPath, previousPath);
         await rename(nextPath, currentPath);
+
         await this.syncDirectory(this.root);
         await this.fault("after-journal-rotation", { operation: "compact" });
+
         this.journal = await open(currentPath, "r+");
         this.journalBytes = offset;
         this.sequence = sequence;
+
         await this.removeObsolete(previousPath);
       } catch (cause) {
         this.poisoned = true;
@@ -525,19 +736,24 @@ export class AsyncDiskStorageDriver implements StorageDriver {
   public close(): Promise<void> {
     if (!this.ownership.isOwned && this.closed) return Promise.resolve();
     if (this.closePromise) return this.closePromise;
+
     this.closing = true;
     const attempt = this.closeAttempt();
     this.closePromise = attempt;
+
     const clearAttempt = () => {
       if (this.closePromise == attempt) this.closePromise = undefined;
     };
+
     void attempt.then(clearAttempt, clearAttempt);
+
     return attempt;
   }
 
   private async closeAttempt(): Promise<void> {
     const failures: unknown[] = [];
     await this.operationTail;
+
     try {
       if (!this.resourcesClosed) {
         try {
@@ -547,6 +763,7 @@ export class AsyncDiskStorageDriver implements StorageDriver {
           failures.push(error);
         }
       }
+
       if (failures.length == 0) {
         try {
           await this.ownership.release();
@@ -557,10 +774,13 @@ export class AsyncDiskStorageDriver implements StorageDriver {
     } finally {
       this.closed = true;
       this.closing = false;
+
       if (!this.ownership.isOwned)
         AsyncDiskStorageDriver.activeDirectories.delete(this.registryKey);
     }
+
     if (failures.length == 1) throw failures[0];
+
     if (failures.length > 1)
       throw new AggregateError(failures, "Storage shutdown encountered multiple failures");
   }
@@ -571,7 +791,7 @@ export class AsyncDiskStorageDriver implements StorageDriver {
   }
 
   private async assertCurrentObjectsExist(): Promise<void> {
-    for (const [key, metadata] of this.entries) {
+    for (const [key, metadata] of this.entries)
       try {
         await stat(this.objectPath(key, metadata.version));
       } catch (error) {
@@ -579,33 +799,41 @@ export class AsyncDiskStorageDriver implements StorageDriver {
           throw new StorageError(`Journal references a missing object: ${key}`, "CORRUPTION", {
             cause: error,
           });
+
         throw error;
       }
-    }
   }
 
   private async cleanupPhysicalObjects(): Promise<void> {
-    const referenced = new Set(
-      [...this.entries].map(([key, metadata]) => this.objectPath(key, metadata.version)),
-    );
+    const referenced = new Map<string, string>();
+
+    for (const [key, metadata] of this.entries)
+      referenced.set(sha256(new TextEncoder().encode(key)), metadata.version);
+
     const walk = async (directory: string): Promise<void> => {
       let items;
+
       try {
-        items = await readdir(directory, { withFileTypes: true });
+        items = await opendir(directory);
       } catch (error) {
         if (nodeErrorCode(error) == "ENOENT") return;
         throw error;
       }
-      for (const item of items) {
+
+      for await (const item of items) {
         const path = join(directory, item.name);
+
         if (item.isDirectory()) await walk(path);
         else if (
           item.isFile() &&
-          (item.name.endsWith(".tmp") || (item.name.endsWith(".obj") && !referenced.has(path)))
+          (item.name.endsWith(".tmp") ||
+            (item.name.endsWith(".obj") &&
+              referenced.get(basename(dirname(path))) + ".obj" != item.name))
         )
           await this.removeObsolete(path);
       }
     };
+
     await walk(join(this.root, OBJECTS_DIRECTORY));
   }
 
@@ -613,23 +841,37 @@ export class AsyncDiskStorageDriver implements StorageDriver {
     const current = join(this.root, JOURNAL_FILE);
     const previous = join(this.root, PREVIOUS_JOURNAL);
     const next = join(this.root, NEXT_JOURNAL);
+
     const hasCurrent = await exists(current);
     const hasPrevious = await exists(previous);
     const hasNext = await exists(next);
+
     if (!hasCurrent) {
       if (hasNext) await rename(next, current);
       else if (hasPrevious) await rename(previous, current);
     } else if (hasPrevious) {
       try {
-        decodeJournal(await readFile(current));
+        const input = await open(current, "r");
+
+        try {
+          await replayJournal(input, this.options.maxJournalBytes, () => {});
+        } finally {
+          await input.close();
+        }
+
         await this.removeObsolete(previous);
-      } catch {
-        await this.removeObsolete(current);
-        await rename(previous, current);
+      } catch (cause) {
+        throw new StorageError(
+          "Cannot establish journal rotation outcome; refusing to restore stale journal",
+          "CORRUPTION",
+          { cause },
+        );
       }
     }
+
     if ((await exists(current)) && (await exists(next))) await this.removeObsolete(next);
     if ((await exists(current)) && (await exists(previous))) await this.removeObsolete(previous);
+
     await this.syncDirectory(this.root);
   }
 
@@ -647,6 +889,7 @@ export class AsyncDiskStorageDriver implements StorageDriver {
 
   private async syncDirectory(directory: string): Promise<void> {
     if (!this.directorySync) return;
+
     try {
       await AsyncDiskStorageDriver.syncDirectoryStatic(directory);
     } catch (error) {
@@ -658,6 +901,7 @@ export class AsyncDiskStorageDriver implements StorageDriver {
 
   private static async syncDirectoryStatic(directory: string): Promise<void> {
     const handle = await open(directory, "r");
+
     try {
       await handle.sync();
     } finally {
@@ -667,11 +911,13 @@ export class AsyncDiskStorageDriver implements StorageDriver {
 
   private async cleanupFailedOpen(): Promise<void> {
     const failures: unknown[] = [];
+
     try {
       if (this.journal) await this.journal.close();
     } catch (error) {
       failures.push(error);
     }
+
     if (failures.length == 0) {
       try {
         await this.ownership.release();
@@ -679,7 +925,9 @@ export class AsyncDiskStorageDriver implements StorageDriver {
         failures.push(error);
       }
     }
+
     if (failures.length == 1) throw failures[0];
+
     if (failures.length > 1)
       throw new AggregateError(failures, "Failed storage initialization cleanup");
   }

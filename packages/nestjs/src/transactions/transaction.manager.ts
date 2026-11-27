@@ -92,6 +92,7 @@ export class TransactionManager {
   readonly #ormFacade: DuraxisORM;
   #accepting = true;
   #activePhysicalTransactions = 0;
+  #shutdown?: Promise<void>;
   readonly #shutdownWaiters = new Set<() => void>();
 
   public constructor(
@@ -243,12 +244,30 @@ export class TransactionManager {
     throw new UnsupportedMixedTransactionError();
   }
 
-  public async shutdown(): Promise<void> {
+  public shutdown(timeoutMs = 30_000): Promise<void> {
     this.#accepting = false;
-
-    if (this.#activePhysicalTransactions == 0) return;
-
-    await new Promise<void>((resolve) => this.#shutdownWaiters.add(resolve));
+    if (this.#activePhysicalTransactions == 0) return Promise.resolve();
+    if (this.#shutdown) return this.#shutdown;
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1)
+      return Promise.reject(new RangeError("Invalid transaction-manager shutdown deadline"));
+    this.#shutdown = new Promise<void>((resolve, reject) => {
+      const complete = () => {
+        clearTimeout(timer);
+        this.#shutdownWaiters.delete(complete);
+        resolve();
+      };
+      const timer = setTimeout(() => {
+        this.#shutdownWaiters.delete(complete);
+        reject(
+          new Error("Transaction-manager shutdown deadline exceeded; active operations remain"),
+        );
+      }, timeoutMs);
+      this.#shutdownWaiters.add(complete);
+    });
+    this.#shutdown.catch(() => {
+      this.#shutdown = undefined;
+    });
+    return this.#shutdown;
   }
 
   private async start<TResult>(
@@ -269,6 +288,13 @@ export class TransactionManager {
           rollbackOnly: false,
         };
 
+        const abort = () => {
+          physical.active = false;
+          physical.pending.clear();
+        };
+
+        manager.signal?.addEventListener("abort", abort, { once: true });
+        
         const context: TransactionExecutionContext = {
           physical,
           readOnly: options.readOnly ?? false,
@@ -296,6 +322,7 @@ export class TransactionManager {
           });
         } finally {
           physical.active = false;
+          manager.signal?.removeEventListener("abort", abort);
         }
       });
 

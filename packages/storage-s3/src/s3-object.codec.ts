@@ -19,14 +19,14 @@ export function decodeObject(physical: Uint8Array): Uint8Array {
   if (physical.byteLength < HEADER_BYTES || !MAGIC.equals(physical.subarray(0, 8)))
     throw new StorageError("Invalid S3 storage object envelope", "CORRUPTION");
 
-  const data = physical.slice(HEADER_BYTES);
+  const data = physical.subarray(HEADER_BYTES);
 
   const digest = createHash("sha256").update(data).digest();
 
   if (!timingSafeEqual(digest, physical.subarray(40, HEADER_BYTES)))
     throw new StorageError("S3 storage object integrity check failed", "CORRUPTION");
 
-  return data;
+  return new Uint8Array(data);
 }
 
 export function isVersion(version: unknown): version is string {

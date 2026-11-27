@@ -47,9 +47,10 @@ export class ForeignKeyManager {
     snapshot: Snapshot,
     sourceWrites: ReadonlyMap<string, PendingWrite>,
     sourceCatalog: ReadonlyMap<string, CollectionDefinition>,
+    targetWrites?: Map<string, PendingWrite>,
   ): Promise<Map<string, PendingWrite>> {
     const catalog = this.validateCatalog(sourceCatalog);
-    const writes = new Map<string, PendingWrite>(sourceWrites);
+    const writes = targetWrites ?? new Map<string, PendingWrite>(sourceWrites);
 
     const incoming = this.incoming(catalog);
     const queue: Array<{ collection: string; id: string }> = [];

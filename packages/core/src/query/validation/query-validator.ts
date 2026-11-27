@@ -114,9 +114,42 @@ function predicate(schema: CollectionDefinition, value: QueryPredicate, depth: n
   }
 }
 
+export function validatePredicateComplexity(
+  query: LogicalQuery,
+  maxDepth = 32,
+  maxNodes = 4096,
+): void {
+  const stack: Array<{ value: unknown; depth: number }> = [{ value: query.where, depth: 0 }];
+
+  let count = 0;
+
+  while (stack.length) {
+    const { value, depth } = stack.pop()!;
+
+    if (value == null) continue;
+
+    if (++count > maxNodes || depth > maxDepth)
+      throw new Error("Query predicate complexity limit exceeded");
+
+    if (!value || typeof value != "object") throw new Error("Invalid query predicate");
+
+    const node = value as Record<string, unknown>;
+
+    if (Array.isArray(node.predicates)) {
+      if (node.predicates.length + count + stack.length > maxNodes)
+        throw new Error("Query predicate complexity limit exceeded");
+
+      for (const child of node.predicates) stack.push({ value: child, depth: depth + 1 });
+    }
+
+    if (node.predicate) stack.push({ value: node.predicate, depth: depth + 1 });
+  }
+}
+
 export function validateQuery(
   query: LogicalQuery,
   catalog: ReadonlyMap<string, CollectionDefinition>,
+  limits?: { readonly maxPredicateDepth: number; readonly maxPredicateNodes: number },
 ): CollectionDefinition {
   if (!query || typeof query != "object" || !isValidSchemaName(query.collection))
     throw new Error("Invalid logical query");
@@ -124,6 +157,7 @@ export function validateQuery(
   const schema = catalog.get(query.collection);
   if (!schema) throw new Error(`Unknown collection: ${query.collection}`);
 
+  validatePredicateComplexity(query, limits?.maxPredicateDepth, limits?.maxPredicateNodes);
   if (query.where) predicate(schema, query.where, 0);
 
   const orders = new Set<string>();

@@ -195,7 +195,7 @@ describe("Core preparation", () => {
         this.releaseList?.();
       }
 
-      override async list(prefix: string) {
+      override async *iterate(prefix: string) {
         if (!this.blockedOnce) {
           this.blockedOnce = true;
 
@@ -205,7 +205,7 @@ describe("Core preparation", () => {
           });
         }
 
-        return super.list(prefix);
+        yield* super.iterate(prefix);
       }
     }
 

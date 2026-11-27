@@ -1,3 +1,4 @@
+import { estimateBytes, ResourceExhaustedError } from "../../../resources/resource-manager.js";
 import type { DocumentRecord, IndexScalar } from "../../../catalog/collection-schema.js";
 import type { QueryContext } from "../../context/query-context.js";
 import type { QueryOrder, QueryPredicate } from "../../model/query.js";
@@ -165,14 +166,29 @@ export class Sort implements QueryOperator {
 
     const compare = (a: QueryRow, b: QueryRow) => compareRows(schema, this.orders, a, b);
 
+    const memory = context.resources.child({});
+    const chunkMemory = memory.reserve({});
+
+    let chunkBytes = 0;
+    let spilledBytes = 0;
+
+    const disk = memory.reserve({});
     const spill = this.options.spill;
+
     let chunk: QueryRow[] = [];
     let runs: string[] = [];
 
     const active = new Set<string>();
 
     const write = async (rows: readonly QueryRow[] | AsyncIterable<QueryRow>) => {
-      const handle = await spill!.write(rows);
+      const bounded = async function* () {
+        for await (const row of rows) {
+          spilledBytes += estimateBytes(row);
+          disk.resize({ spillBytes: spilledBytes });
+          yield row;
+        }
+      };
+      const handle = await spill!.write(bounded());
       active.add(handle);
       return handle;
     };
@@ -207,6 +223,22 @@ export class Sort implements QueryOperator {
 
     try {
       for await (const row of this.input.execute(context)) {
+        const size = estimateBytes(row);
+
+        if (
+          chunkBytes + size > Math.floor(context.limits.maxQueryWorkingBytes / 2) &&
+          chunk.length &&
+          spill
+        ) {
+          chunk.sort(compare);
+          runs.push(await write(chunk));
+          chunk = [];
+          chunkBytes = 0;
+          chunkMemory.resize({});
+        }
+
+        chunkMemory.resize({ workingBytes: chunkBytes + size });
+        chunkBytes += size;
         chunk.push(row);
 
         if (chunk.length < maximum) continue;
@@ -215,7 +247,10 @@ export class Sort implements QueryOperator {
         chunk.sort(compare);
         runs.push(await write(chunk));
         chunk = [];
+        chunkBytes = 0;
+        chunkMemory.resize({});
       }
+
       if (runs.length == 0) {
         chunk.sort(compare);
 
@@ -251,7 +286,21 @@ export class Sort implements QueryOperator {
 
       yield* merge(runs);
     } finally {
-      await Promise.all([...active].map((handle) => spill!.delete(handle)));
+      try {
+        const cleanup = await Promise.allSettled(
+          [...active].map((handle) => spill!.delete(handle)),
+        );
+
+        const failures = cleanup.filter((r) => r.status == "rejected");
+
+        if (failures.length)
+          throw new AggregateError(
+            failures.map((r) => r.reason),
+            "Sort spill cleanup failed",
+          );
+      } finally {
+        memory.close();
+      }
     }
   }
 }
@@ -318,11 +367,19 @@ abstract class SetOperator implements QueryOperator {
 
   protected async ids(context: QueryContext, input: QueryOperator): Promise<Map<string, QueryRow>> {
     const result = new Map<string, QueryRow>();
+    const memory = context.resources.reserve({});
+
+    let bytes = 0;
 
     for await (const row of input.execute(context)) {
       context.assertActive();
       if (result.size >= this.maxSetEntries && !result.has(row.id))
         throw new QueryMemoryLimitError();
+
+      if (!result.has(row.id)) {
+        bytes += estimateBytes(row);
+        memory.resize({ workingBytes: bytes });
+      }
 
       result.set(row.id, row);
     }
@@ -338,6 +395,9 @@ export class Union extends SetOperator {
 
   public async *execute(context: QueryContext): AsyncIterable<QueryRow> {
     const seen = new Set<string>();
+    const memory = context.resources.reserve({});
+
+    let bytes = 0;
 
     for (const input of this.inputs)
       for await (const row of input.execute(context)) {
@@ -346,6 +406,8 @@ export class Union extends SetOperator {
         if (seen.has(row.id)) continue;
         if (seen.size >= this.maxSetEntries) throw new QueryMemoryLimitError();
 
+        bytes += row.id.length * 2 + 48;
+        memory.resize({ workingBytes: bytes });
         seen.add(row.id);
 
         yield row;
@@ -362,7 +424,7 @@ export class Intersection extends SetOperator {
 
     for (const input of rest) {
       const current = await this.ids(context, input);
-      for (const id of [...candidates.keys()]) if (!current.has(id)) candidates.delete(id);
+      for (const id of candidates.keys()) if (!current.has(id)) candidates.delete(id);
     }
 
     for (const row of candidates.values()) {
@@ -384,7 +446,19 @@ export class Difference extends SetOperator {
   }
 
   public async *execute(context: QueryContext): AsyncIterable<QueryRow> {
-    const excluded = await this.ids(context, this.excluded);
+    const excluded = new Set<string>();
+    const memory = context.resources.reserve({});
+    let bytes = 0;
+
+    for await (const row of this.excluded.execute(context))
+      if (!excluded.has(row.id)) {
+        if (excluded.size >= this.maxSetEntries) throw new QueryMemoryLimitError();
+
+        bytes += row.id.length * 2 + 48;
+        
+        memory.resize({ workingBytes: bytes });
+        excluded.add(row.id);
+      }
 
     for await (const row of this.universe.execute(context)) {
       context.assertActive();

@@ -167,3 +167,20 @@ export { RuleBasedPlanner } from "./query/planner/rule-based-planner.js";
 export { PlanCompiler } from "./query/planner/plan-compiler.js";
 export { explainPhysicalPlan } from "./query/planner/explain.js";
 export type { PhysicalAccess, PhysicalPlan, ExplainResult } from "./query/planner/physical-plan.js";
+export {
+  ResourceScope,
+  ResourceExhaustedError,
+  OperationCancelledError,
+  DEFAULT_RESOURCE_LIMITS,
+  resourceLimits,
+  estimateBytes,
+  materialize,
+} from "./resources/resource-manager.js";
+export type {
+  ResourceLimits,
+  ResourceAmounts,
+  ResourceReservation,
+  Resource,
+} from "./resources/resource-manager.js";
+
+export type { CursorKeyring } from "./query/model/cursor.js";

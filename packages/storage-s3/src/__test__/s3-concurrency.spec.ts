@@ -100,7 +100,7 @@ describe("S3 driver with the real Duraxis engines and fake S3 transport", () => 
     }
   });
 
-  it("rejects stale listing versions during real core garbage collection", async () => {
+  it("fails closed for destructive shared-storage GC even with caller exclusivity intent", async () => {
     const driver = create();
     const key = `__duraxis/v1/objects/${randomUUID()}`;
     const first = await driver.put(key, new Uint8Array([1]), { condition: { type: "if-absent" } });
@@ -110,28 +110,15 @@ describe("S3 driver with the real Duraxis engines and fake S3 transport", () => 
       const dryRun = await database.collectGarbage(driver, { dryRun: true, olderThanMs: 0 });
       expect(dryRun.candidates).toBe(1);
       expect(dryRun.deleted).toBe(0);
-      let changed = false;
-      service.before = async (command) => {
-        if (
-          !changed &&
-          command instanceof PutObjectCommand &&
-          command.input.Metadata?.["duraxis-state"] == "deleted"
-        ) {
-          changed = true;
-          const second = create();
-          await second.put(key, new Uint8Array([2]), {
-            condition: { type: "if-version", version: first.version },
-          });
-        }
-      };
-      const collected = await database.collectGarbage(driver, {
-        dryRun: false,
-        exclusiveMaintenance: true,
-        olderThanMs: 0,
-      });
-      expect(changed).toBe(true);
-      expect(collected.deleted).toBe(0);
-      expect((await driver.get(key))?.data).toEqual(new Uint8Array([2]));
+      // A caller boolean cannot fence independent S3 readers and manifest writers.
+      await expect(
+        database.collectGarbage(driver, {
+          dryRun: false,
+          exclusiveMaintenance: true,
+          olderThanMs: 0,
+        }),
+      ).rejects.toThrow("verified single-owner");
+      expect((await driver.get(key))?.data).toEqual(new Uint8Array([1]));
     } finally {
       await database.close({ closeStorage: true });
     }

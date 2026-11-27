@@ -73,3 +73,7 @@ upgrade Core before adopting migrations and do not downgrade migrated databases.
 Affected-schema validation stages final records in memory. Streaming reads do not
 bound transaction memory, and schema-mutated index queries may scan and sort.
 For versioned evolution use [`@duraxis/migrations`](../migrations/README.md).
+
+## Production resource and lifecycle limits
+
+See the [production hardening guide](../../docs/PRODUCTION-HARDENING.md) for bounded defaults, cancellation, verified maintenance, tenant trust boundaries, encrypted cursors, upgrade instructions and remaining pilot limitations. Core rejects storage adapters without bounded-read capability; destructive shared-storage garbage collection is unsupported.

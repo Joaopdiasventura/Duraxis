@@ -175,6 +175,7 @@ export class SchemaEditor {
 }
 
 export interface MigrationContext {
+  readonly signal: AbortSignal;
   readonly schema: SchemaEditor;
   readonly get: Transaction["getDocument"];
   readonly scan: Transaction["scanCollection"];
@@ -188,6 +189,7 @@ export interface MigrationContext {
 
 export function createMigrationContext(tx: Transaction): MigrationContext {
   return Object.freeze({
+    signal: tx.signal,
     schema: new SchemaEditor(tx),
     get: tx.getDocument.bind(tx),
     scan: tx.scanCollection.bind(tx),

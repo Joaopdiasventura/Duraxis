@@ -1,3 +1,4 @@
+import { type ResourceScope } from "../../resources/resource-manager.js";
 import type { StorageDriver } from "@duraxis/storage";
 import type { Manifest } from "../../commit/manifest.js";
 import type { PendingWrite } from "../../transactions/transaction.js";
@@ -235,6 +236,7 @@ export class SecondaryIndexManager {
     nextPrimaryRoot: string | null,
     writes: ReadonlyMap<string, PendingWrite>,
     catalog: ReadonlyMap<string, CollectionDefinition>,
+    resources?: ResourceScope,
   ): Promise<Map<string, string | null>> {
     const roots = new Map(previousManifest.indexRoots);
     const declared = new Set<string>();
@@ -243,7 +245,12 @@ export class SecondaryIndexManager {
     for (const [collectionName, schema] of catalog) {
       const previousSchema = previousManifest.catalog.get(collectionName);
 
-      const changes = await this.collectChanges(previousManifest, collectionName, writes);
+      const changes = await this.collectChanges(
+        previousManifest,
+        collectionName,
+        writes,
+        resources,
+      );
 
       for (const index of schema.indexes) {
         const id = indexId(collectionName, index.name);
@@ -330,8 +337,13 @@ export class SecondaryIndexManager {
     manifest: Manifest,
     collection: string,
     writes: ReadonlyMap<string, PendingWrite>,
+    resources?: ResourceScope,
   ): Promise<RecordChange[]> {
     const changes: RecordChange[] = [];
+    const memory = resources?.reserve({});
+
+    let bytes = 0;
+
     for (const [key, operation] of writes) {
       const parsed = parseRecordKey(key);
 
@@ -339,12 +351,19 @@ export class SecondaryIndexManager {
 
       const previousRef = await this.primary.getReference(manifest, key);
 
+      const previousData =
+        previousRef == null ? undefined : await this.primary.readObject(previousRef);
+
+      bytes +=
+        512 +
+        (previousData?.byteLength ?? 0) * 8 +
+        (operation.type == "put" ? operation.data.byteLength * 8 : 0);
+
+      memory?.resize({ workingBytes: bytes });
+
       changes.push({
         recordId: parsed.id,
-        previous:
-          previousRef == null
-            ? undefined
-            : decodeDocument(await this.primary.readObject(previousRef)),
+        previous: previousRef == null ? undefined : decodeDocument(previousData!),
         next: operation.type == "put" ? decodeDocument(operation.data) : undefined,
       });
     }
