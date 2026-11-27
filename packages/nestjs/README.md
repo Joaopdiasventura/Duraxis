@@ -143,4 +143,17 @@ Veja a [decisão de arquitetura](../../docs/NESTJS_TRANSACTIONS.md) para a anál
 
 Transações declarativas dependem de metadados e inicialização do Nest; o pacote não é marcado
 como livre de efeitos colaterais. Ele não adiciona coordenação distribuída. Requer Node.js
-22.12+.
+24.15.0+.
+
+## Migration deployment
+
+Run `duraxis migrate:up` in a deployment job before starting NestJS, then use
+`schema: { mode: "validate" }` (or opt-in `validate-managed`) in your connection
+options. See the [CLI guide](../cli/README.md). Migrations introduce no NestJS CLI
+dependency or automatic startup changes. Named connections, `forRootAsync`,
+`autoLoadEntities`, and existing transaction/resource ownership remain unchanged.
+For disk, stop the connection owner before the migration job opens the directory.
+For S3, coordinate application writers separately: manifest CAS prevents competing
+publications but does not put application replicas into maintenance mode. Stop
+older incompatible replicas before migration and start compatible versions after
+successful validation; use staged compatible schema releases for rolling upgrades.

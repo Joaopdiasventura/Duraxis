@@ -1,0 +1,22 @@
+import { defineConfig } from "vite";
+import { resolve } from "node:path";
+
+export default defineConfig({
+  build: {
+    target: "node24",
+    outDir: "dist",
+    emptyOutDir: true,
+    sourcemap: true,
+    minify: false,
+
+    lib: {
+      entry: resolve(import.meta.dirname, "src/index.ts"),
+      formats: ["es"],
+      fileName: (format) => (format == "es" ? "index.js" : "index.cjs"),
+    },
+
+    rolldownOptions: {
+      external: [/^node:/, /^@duraxis\//, "typescript"],
+    },
+  },
+});

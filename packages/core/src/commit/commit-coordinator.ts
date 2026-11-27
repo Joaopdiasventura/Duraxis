@@ -1,3 +1,6 @@
+import { QueryContext } from "../query/context/query-context.js";
+import { recordKey, validateDocument, encodeDocument } from "../catalog/collection-schema.js";
+
 import { randomUUID } from "node:crypto";
 import type { StorageDriver } from "@duraxis/storage";
 
@@ -38,9 +41,53 @@ export class CommitCoordinator {
 
     const catalog = new Map(prepared.snapshot.manifest.catalog);
 
-    for (const [name, schema] of prepared.schemaChanges) catalog.set(name, schema);
+    const staged = new Map(prepared.writes);
 
-    const writes = await this.foreignKeys.prepare(prepared.snapshot, prepared.writes, catalog);
+    for (const [name, schema] of prepared.schemaChanges) {
+      if (schema == null) catalog.delete(name);
+      else catalog.set(name, schema);
+
+      const previous = prepared.snapshot.manifest.catalog.get(name);
+
+      const requiresValidation =
+        schema == null ||
+        !previous ||
+        JSON.stringify(previous.fields) != JSON.stringify(schema.fields) ||
+        previous.allowAdditionalFields != schema.allowAdditionalFields ||
+        JSON.stringify(previous.foreignKeys) != JSON.stringify(schema.foreignKeys);
+
+      if (!requiresValidation) continue;
+
+      const scanCatalog = new Map(catalog);
+
+      if (schema == null)
+        scanCatalog.set(
+          name,
+          prepared.snapshot.manifest.catalog.get(name) ?? { name, indexes: [] },
+        );
+
+      const context = new QueryContext(this.storage, prepared.snapshot, this.keys, {
+        writes: staged,
+        catalog: scanCatalog,
+      });
+
+      try {
+        for await (const row of context.scanCollection(name))
+          staged.set(
+            recordKey(name, row.id),
+            schema == null
+              ? { type: "delete" }
+              : {
+                  type: "put",
+                  data: encodeDocument(validateDocument(schema, row.document)),
+                },
+          );
+      } finally {
+        context.close();
+      }
+    }
+
+    const writes = await this.foreignKeys.prepare(prepared.snapshot, staged, catalog);
 
     const changes = new Map<string, string | null>();
 

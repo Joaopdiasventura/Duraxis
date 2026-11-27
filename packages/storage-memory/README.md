@@ -28,7 +28,7 @@ A API pública é `MemoryStorageDriver`, que implementa leitura, escrita e remo�
 condicionais, listagem e métricas. Ela pode ser passada diretamente a `DuraxisDatabase` ou
 `DuraxisModule.forRoot`.
 
-Não há persistência entre processos nem coordenação distribuída. Requer Node.js 22.12+ e é
+Não há persistência entre processos nem coordenação distribuída. Requer Node.js 24.15.0+ e é
 distribuído em ESM, CommonJS e TypeScript.
 
 Release automation verification.

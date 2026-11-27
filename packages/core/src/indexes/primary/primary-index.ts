@@ -20,7 +20,7 @@ export class PrimaryIndex {
   }
 
   public async getReference(manifest: Manifest, logicalKey: string): Promise<string | null> {
-    this.keys.validateLogicalKey(logicalKey);
+    this.keys.validatePrimaryKey(logicalKey);
 
     const value = await this.tree.get(manifest.primaryRoot, encoder.encode(logicalKey));
 
@@ -39,7 +39,7 @@ export class PrimaryIndex {
     const operations: BatchOperation[] = [];
 
     for (const [logicalKey, physicalRef] of changes) {
-      this.keys.validateLogicalKey(logicalKey);
+      this.keys.validatePrimaryKey(logicalKey);
 
       if (physicalRef == null) {
         operations.push({
@@ -85,7 +85,7 @@ export class PrimaryIndex {
       const key = decoder.decode(entry.key);
       const ref = decoder.decode(entry.value);
 
-      this.keys.validateLogicalKey(key);
+      this.keys.validatePrimaryKey(key);
       this.keys.validateObjectKey(ref);
 
       yield { key, ref };

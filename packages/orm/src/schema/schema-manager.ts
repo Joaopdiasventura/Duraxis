@@ -8,9 +8,9 @@ import {
 } from "@duraxis/core";
 import { SchemaViolationError } from "../errors/index.js";
 import type { MetadataRegistry } from "../metadata/metadata-registry.js";
-import { mapEntitySchema, mapJunctionSchemas } from "./schema-mapper.js";
+import { exportRegistrySchema } from "./schema-exporter.js";
 
-export type SchemaMode = "validate" | "create";
+export type SchemaMode = "validate" | "validate-managed" | "create";
 
 function same(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) == JSON.stringify(right);
@@ -35,12 +35,9 @@ export class SchemaManager {
       ]),
     );
 
-    const expectedSchemas = [
-      ...this.registry.all().map((metadata) => mapEntitySchema(metadata)),
-      ...mapJunctionSchemas(this.registry.all()),
-    ].map((schema) => normalizeCollection(schema));
+    const expectedSchemas = exportRegistrySchema(this.registry);
     const missing = expectedSchemas.filter((schema) => !persisted.has(schema.name));
-    if (missing.length && this.mode == "validate")
+    if (missing.length && this.mode != "create")
       throw new SchemaViolationError(`Missing collection: ${missing[0]!.name}`);
     if (missing.length) {
       await this.mutate(
@@ -59,13 +56,16 @@ export class SchemaManager {
       if (!same(expected.foreignKeys ?? [], current.foreignKeys ?? []))
         throw new SchemaViolationError(`Incompatible foreign keys: ${expected.name}`);
 
+      if (this.mode == "validate-managed" && current.indexes.length != expected.indexes.length)
+        throw new SchemaViolationError(`Unexpected managed index: ${expected.name}`);
+
       const actualIndexes = indexMap(current);
 
       for (const expectedIndex of expected.indexes) {
         const actual = actualIndexes.get(expectedIndex.name);
 
         if (!actual) {
-          if (this.mode == "validate")
+          if (this.mode != "create")
             throw new SchemaViolationError(`Missing index: ${expected.name}/${expectedIndex.name}`);
 
           await this.mutate(

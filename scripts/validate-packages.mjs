@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,13 +16,15 @@ const packageOrder = [
   "core",
   "orm",
   "nestjs",
+  "migrations",
+  "cli",
 ];
 const privatePackage = "storage-testkit";
 const expectedAuthor = "João Paulo Dias <joaopdias.dev@gmail.com>";
 const expectedRepository = "https://github.com/Joaopdiasventura/Duraxis.git";
 const npmRegistry = "https://registry.npmjs.org/";
 const executable = (name) =>
-  process.platform == "win32" && (name == "npm" || name == "pnpm") ? `${name}.cmd` : name;
+  process.platform == "win32" && ["npm", "pnpm", "npx"].includes(name) ? `${name}.cmd` : name;
 
 if (!["manifests", "artifacts", "pack"].includes(mode)) {
   throw new Error(`Unknown validation mode: ${mode}`);
@@ -64,6 +66,11 @@ function exportTargets(manifest) {
 function validateManifests() {
   const rootManifest = loadJson(join(root, "package.json"));
   const testkit = loadJson(packagePath(privatePackage, "package.json"));
+  assert.equal(rootManifest.engines?.node, ">=24.15.0");
+  assert.equal(testkit.engines?.node, ">=24.15.0");
+  assert.equal(rootManifest.devEngines.runtime.version, ">=24.15.0");
+  assert.equal(readFileSync(join(root, ".node-version"), "utf8").trim(), "24.15.0");
+  assert.equal(readFileSync(join(root, ".nvmrc"), "utf8").trim(), "24.15.0");
   assert.equal(rootManifest.private, true, "the workspace root must be private");
   assert.equal(testkit.private, true, "@duraxis/storage-testkit must remain private");
 
@@ -81,7 +88,7 @@ function validateManifests() {
     });
     assert.match(manifest.homepage, /^https:\/\/github\.com\/Joaopdiasventura\/Duraxis\//);
     assert.equal(manifest.bugs?.url, "https://github.com/Joaopdiasventura/Duraxis/issues");
-    assert.equal(manifest.engines?.node, ">=22.12.0");
+    assert.equal(manifest.engines?.node, ">=24.15.0");
     assert.deepEqual(manifest.publishConfig, { access: "public", registry: npmRegistry });
     assert.deepEqual(manifest.exports?.["."], {
       types: "./dist/index.d.ts",
@@ -117,6 +124,9 @@ function validateManifests() {
     );
   }
 
+  assert.equal(packages.get("cli").dependencies.typescript, "5.9.3");
+  assert.deepEqual(packages.get("cli").bin, { duraxis: "./dist/bin.js" });
+  assert.equal(packages.get("migrations").dependencies["@duraxis/core"], "workspace:*");
   assert.equal(packages.get("storage").sideEffects, false);
   assert.equal(packages.get("storage-memory").sideEffects, false);
   assert.equal(packages.get("storage-disk").sideEffects, false);
@@ -172,6 +182,7 @@ async function inspectTarball(directory, tarball, extractionRoot) {
   const sourceManifest = packages.get(directory);
   assert.equal(packedManifest.name, sourceManifest.name);
   assert.equal(packedManifest.version, sourceManifest.version);
+  assert.equal(packedManifest.engines?.node, ">=24.15.0");
   assert.ok(
     !JSON.stringify(packedManifest).includes("workspace:"),
     `${packedManifest.name}: workspace protocol leaked`,
@@ -214,6 +225,17 @@ async function inspectTarball(directory, tarball, extractionRoot) {
     );
   }
 
+  if (directory == "cli") {
+    assert.ok(
+      (await readFile(join(packageRoot, "dist/bin.js"), "utf8")).startsWith(
+        "#!/usr/bin/env node\n",
+      ),
+    );
+    assert.ok(existsSync(join(packageRoot, "dist/runtime.mjs")));
+    assert.ok(!existsSync(join(packageRoot, "dist/ts-loader.mjs")));
+    if (process.platform != "win32")
+      assert.ok((await stat(join(packageRoot, "dist/bin.js"))).mode & 0o111);
+  }
   const packedFiles = await readdir(packageRoot, { recursive: true });
   for (const file of packedFiles) {
     const normalized = String(file).replaceAll("\\", "/");
@@ -353,7 +375,18 @@ void DuraxisModule;
   run("node", [join(root, "node_modules", "typescript", "bin", "tsc"), "-p", "tsconfig.json"], {
     cwd: consumer,
   });
-  console.log("✓ external ESM, CommonJS, and TypeScript consumption passed");
+  await writeFile(
+    join(consumer, "migration-smoke.mjs"),
+    await readFile(join(root, "scripts/fixtures/migration-smoke.mjs"), "utf8"),
+  );
+  run("pnpm", ["exec", "duraxis", "--help"], { cwd: consumer });
+  run("npx", ["--offline", "--package=@duraxis/cli", "duraxis", "--help"], { cwd: consumer });
+  await writeFile(
+    join(consumer, "typescript-loader-smoke.mjs"),
+    await readFile(join(root, "scripts/fixtures/typescript-loader-smoke.mjs"), "utf8"),
+  );
+  run("node", ["migration-smoke.mjs"], { cwd: consumer });
+  console.log("✓ external ESM, CommonJS, TypeScript, and packed CLI migration lifecycle passed");
 }
 
 async function validatePack() {

@@ -57,3 +57,5 @@ export type {
 export * from "./errors/index.js";
 
 export { TransactionConflictError, CommitOutcomeUnknownError } from "@duraxis/core";
+
+export { exportSchema } from "./schema/schema-exporter.js";

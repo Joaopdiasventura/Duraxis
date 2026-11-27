@@ -48,7 +48,7 @@ export type PendingWrite =
 export interface PreparedTransaction {
   readonly snapshot: Snapshot;
   readonly writes: ReadonlyMap<string, PendingWrite>;
-  readonly schemaChanges: ReadonlyMap<string, CollectionDefinition>;
+  readonly schemaChanges: ReadonlyMap<string, CollectionDefinition | null>;
 }
 
 function cloneSchema(schema: CollectionDefinition): CollectionDefinition {
@@ -73,7 +73,7 @@ function cloneSnapshot(snapshot: Snapshot): Snapshot {
 
 export class Transaction {
   private readonly writes = new Map<string, PendingWrite>();
-  private readonly schemas = new Map<string, CollectionDefinition>();
+  private readonly schemas = new Map<string, CollectionDefinition | null>();
 
   private readonly capturedSnapshot: Snapshot;
   private readonly reader: ManifestSnapshotReader;
@@ -145,6 +145,8 @@ export class Transaction {
     this.assertActive();
     validateCollection(definition);
 
+    if (this.schemas.get(definition.name) === null)
+      throw new Error("Cannot recreate a dropped collection in the same transaction");
     if (this.collection(definition.name))
       throw new Error(`Collection already exists: ${definition.name}`);
 
@@ -154,14 +156,91 @@ export class Transaction {
   public defineCollections(definitions: readonly CollectionDefinition[]): void {
     this.assertActive();
     const names = new Set<string>();
+
     for (const definition of definitions) {
       validateCollection(definition);
-      if (names.has(definition.name) || this.collection(definition.name))
+      if (
+        names.has(definition.name) ||
+        this.schemas.has(definition.name) ||
+        this.collection(definition.name)
+      )
         throw new Error(`Collection already exists: ${definition.name}`);
       names.add(definition.name);
     }
+
     for (const definition of definitions)
       this.schemas.set(definition.name, cloneSchema(definition));
+  }
+
+  public getCollectionDefinitions(): readonly CollectionDefinition[] {
+    this.assertActive();
+
+    const catalog = new Map(this.capturedSnapshot.manifest.catalog);
+
+    for (const [name, schema] of this.schemas) {
+      if (schema == null) catalog.delete(name);
+      else catalog.set(name, schema);
+    }
+
+    return [...catalog.values()].map(cloneSchema);
+  }
+
+  public alterCollection(name: string, definition: CollectionDefinition): void {
+    this.assertActive();
+    this.requireCollection(name);
+
+    if (name != definition.name)
+      throw new Error("Collection replacement cannot rename a collection");
+
+    this.schemas.set(name, cloneSchema(definition));
+  }
+
+  public dropCollection(name: string): void {
+    this.assertActive();
+    this.requireCollection(name);
+    this.schemas.set(name, null);
+  }
+
+  public async getMetadata(namespace: string): Promise<Uint8Array | null> {
+    this.assertActive();
+
+    const key = this.metadataKey(namespace);
+    this.pendingReads++;
+
+    try {
+      const pending = this.writes.get(key);
+
+      const value = pending
+        ? pending.type == "delete"
+          ? null
+          : pending.data
+        : await this.reader.get(key);
+
+      this.assertActive();
+
+      return value == null ? null : new Uint8Array(value);
+    } finally {
+      this.releaseRead();
+    }
+  }
+
+  public putMetadata(namespace: string, data: Uint8Array): void {
+    this.assertActive();
+    this.stagePut(this.metadataKey(namespace), data);
+  }
+
+  private metadataKey(namespace: string): string {
+    if (!/^[a-z][a-z0-9-]{0,63}$/.test(namespace)) throw new Error("Invalid metadata namespace");
+    return `__duraxis/metadata/${namespace}`;
+  }
+
+  public async *scanCollection(collection: string): AsyncIterable<QueryRow> {
+    const context = this.createQueryContext();
+    try {
+      yield* context.scanCollection(collection);
+    } finally {
+      context.close();
+    }
   }
 
   public addIndex(collection: string, index: SecondaryIndexDefinition): void {
@@ -209,7 +288,10 @@ export class Transaction {
 
     const catalog = new Map(this.capturedSnapshot.manifest.catalog);
 
-    for (const [name, schema] of this.schemas) catalog.set(name, cloneSchema(schema));
+    for (const [name, schema] of this.schemas) {
+      if (schema == null) catalog.delete(name);
+      else catalog.set(name, cloneSchema(schema));
+    }
 
     let context!: QueryContext;
 
@@ -351,7 +433,10 @@ export class Transaction {
       snapshot: cloneSnapshot(this.capturedSnapshot),
       writes,
       schemaChanges: new Map(
-        [...this.schemas].map(([name, schema]) => [name, cloneSchema(schema)]),
+        [...this.schemas].map(([name, schema]) => [
+          name,
+          schema == null ? null : cloneSchema(schema),
+        ]),
       ),
     };
   }
@@ -429,7 +514,9 @@ export class Transaction {
   }
 
   private collection(name: string): CollectionDefinition | undefined {
-    return this.schemas.get(name) ?? this.capturedSnapshot.manifest.catalog.get(name);
+    return this.schemas.has(name)
+      ? (this.schemas.get(name) ?? undefined)
+      : this.capturedSnapshot.manifest.catalog.get(name);
   }
 
   private requireCollection(name: string): CollectionDefinition {

@@ -18,16 +18,42 @@ entre versões menores; avalie os testes e os limites documentados antes de usar
 | `@duraxis/core`            | Banco transacional, catálogo, índices, consultas, recuperação e coleta de lixo.   |
 | `@duraxis/orm`             | Entidades com decorators, schema, repositórios, queries e transações ORM.         |
 | `@duraxis/nestjs`          | Módulos dinâmicos, injeção e transações declarativas para NestJS.                 |
+| `@duraxis/migrations`      | Migrações transacionais, histórico protegido, snapshots e comparação de schemas.  |
+| `@duraxis/cli`             | CLI para gerar, aplicar, reverter e validar migrações.                            |
 | `@duraxis/storage-testkit` | Suíte interna de conformidade para drivers; pacote privado, não publicado.        |
 
 As dependências de execução seguem a direção `storage → drivers/core → orm → nestjs`.
 
 ## Requisitos
 
-- Node.js 22.12 ou mais recente;
+- Node.js 24.15.0 ou mais recente;
 - pnpm 12.16.1 ou mais recente para desenvolver no monorepo;
 - TypeScript com `experimentalDecorators` e `emitDecoratorMetadata` ao usar ORM/NestJS;
 - NestJS 10 ou 11 para `@duraxis/nestjs`.
+
+## Runtime de desenvolvimento
+
+Node.js 24.15.0 or newer is required. O desenvolvimento e a CI usam exatamente
+24.15.0, definido em `.nvmrc` e `.node-version`:
+
+```bash
+nvm install
+nvm use
+node --version # v24.15.0
+pnpm install --frozen-lockfile
+```
+
+`engineStrict: true` em `pnpm-workspace.yaml` e `devEngines.runtime` rejeitam runtimes
+não suportados. A CLI também verifica a versão antes de carregar suas APIs modernas.
+O build mantém ES2022 como alvo TypeScript; os tipos Node são da linha 24.
+O compilador nativo TypeScript 7 serve ao workspace. A CLI mantém TypeScript 5.9.3
+como dependência de produção para transpilação de decorators e identidade estável
+de migrações; essa separação é intencional.
+
+A CLI carrega configurações, entidades com decorators legados e migrações TypeScript
+internamente, sem flags experimentais nem instalação de outro transpiler.
+Imports locais NodeNext como `./entities.js` resolvem `entities.ts` quando o
+JavaScript não existe. Consulte os [formatos e limites do loader](packages/cli/README.md#configuration-and-loading).
 
 ## Instalação
 
@@ -80,7 +106,7 @@ pnpm test
 ```
 
 `pnpm pack:check` gera tarballs em um diretório temporário, valida manifests e exports e instala
-os seis pacotes em um projeto externo para executar smoke tests ESM, CommonJS e TypeScript.
+os nove pacotes em um projeto externo para executar smoke tests ESM, CommonJS e TypeScript.
 Nenhum desses comandos publica no npm.
 
 ## Versionamento e publicação
@@ -104,3 +130,24 @@ Trusted Publishing estão em [`docs/RELEASING.md`](docs/RELEASING.md).
 ## Licença
 
 Distribuído sob a licença [ISC](LICENSE).
+
+## Versioned migrations
+
+`@duraxis/migrations` provides atomic schema/data migrations and protected database
+history. `@duraxis/cli` provides creation, ORM-based generation, snapshots,
+application, rollback, drift checks, and existing-database baselines.
+
+```bash
+pnpm add @duraxis/migrations
+pnpm add -D @duraxis/cli
+pnpm exec duraxis init
+# Configure entities and createDatabase() in duraxis.config.ts.
+pnpm exec duraxis migration:generate initial-schema
+pnpm exec duraxis migrate:up
+pnpm exec duraxis migrate:check
+```
+
+See the [CLI guide](packages/cli/README.md) for the complete lifecycle and
+[programmatic migrations](packages/migrations/README.md) for transaction and recovery
+semantics. Run migrations before starting applications with schema validation;
+existing applications do not require migration configuration.

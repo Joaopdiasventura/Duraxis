@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 
 export default defineConfig({
   build: {
-    target: "node22",
+    target: "node24",
     outDir: "dist",
     emptyOutDir: true,
     sourcemap: true,

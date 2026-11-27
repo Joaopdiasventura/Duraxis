@@ -11,7 +11,7 @@ npm install @duraxis/storage-disk
 yarn add @duraxis/storage-disk
 ```
 
-Node.js 22.12 or newer is required.
+Node.js 24.15.0 or newer is required.
 
 ## Basic use
 

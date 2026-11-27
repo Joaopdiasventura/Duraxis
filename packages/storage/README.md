@@ -31,4 +31,4 @@ Use `@duraxis/storage-memory` ou `@duraxis/storage-disk` para uma implementaçã
 driver customizado deve respeitar a semântica de versões, condições e listagem do contrato;
 o testkit de conformidade ainda é interno e não é publicado.
 
-Requer Node.js 22.12+. O pacote inclui ESM, CommonJS e declarações TypeScript.
+Requer Node.js 24.15.0+. O pacote inclui ESM, CommonJS e declarações TypeScript.

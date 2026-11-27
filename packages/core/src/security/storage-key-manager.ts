@@ -48,6 +48,11 @@ export class StorageKeyManager {
       throw new Error("Reserved Duraxis logical key namespace");
   }
 
+  public validatePrimaryKey(key: string): void {
+    if (/^__duraxis\/metadata\/[a-z][a-z0-9-]{0,63}$/.test(key)) return;
+    this.validateLogicalKey(key);
+  }
+
   public objectKey(data: Uint8Array): string {
     return `${this.objectPrefix}` + `${randomUUID()}-${sha256(data)}`;
   }

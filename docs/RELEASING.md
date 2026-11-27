@@ -6,7 +6,7 @@ por um mantenedor autenticado ou pelo job OIDC.
 
 ## Modelo de versões
 
-Os seis pacotes públicos têm versões independentes. Os arrays `fixed` e `linked` do Changesets
+Os nove pacotes públicos têm versões independentes. Os arrays `fixed` e `linked` do Changesets
 estão vazios. Dependências internas usam `workspace:*` no repositório; `pnpm pack` as converte para
 a versão exata do pacote no tarball. `updateInternalDependencies: patch` atualiza dependências
 internas quando os pacotes envolvidos recebem release. A raiz e `@duraxis/storage-testkit` são
@@ -25,7 +25,7 @@ Use SemVer:
 2. Execute `pnpm changeset`, selecione somente os pacotes públicos afetados, escolha o bump e
    escreva um resumo voltado ao consumidor.
 3. Confirme com `pnpm changeset:status` e envie código + changeset no mesmo pull request.
-4. A CI executa formato, tipos, build, 263+ testes, inspeção dos tarballs e consumo externo.
+4. A CI executa formato, tipos, build, testes automatizados, inspeção dos tarballs e consumo externo.
 5. Ao entrar em `main`, `publish.yml` cria ou atualiza o Release PR usando
    `pnpm version-packages`. Esse PR contém versões, ranges internos e changelogs.
 6. Revise o grafo de versões, os changelogs e os artefatos; aprove e mescle o Release PR.
@@ -88,7 +88,7 @@ de publicação, depois das validações. O npm gera provenance automaticamente 
 públicos publicados por OIDC a partir de um repositório público.
 
 Depois da primeira publicação estável, o proprietário do scope deve repetir estes passos para
-cada um dos seis pacotes em npmjs.com:
+cada um dos nove pacotes em npmjs.com:
 
 1. Abra **Package settings → Trusted publishing → GitHub Actions**.
 2. Informe owner `Joaopdiasventura`, repository `Duraxis`, workflow `publish.yml` (somente o nome)
@@ -116,9 +116,46 @@ documentação ou GitHub Actions.
 2. Autentique-se fora do repositório (`npm login --registry=https://registry.npmjs.org/`).
 3. Gere cada tarball com `pnpm --dir packages/<pacote> pack --pack-destination <diretorio-temporario>`.
 4. Publique os tarballs com `npm publish <arquivo.tgz> --access public` nesta ordem:
-   `storage`; `storage-memory`, `storage-disk` e `core`; `orm`; `nestjs`.
-5. Verifique os seis pacotes e revogue qualquer token temporário.
+   `storage`; `storage-memory`, `storage-disk` e `storage-s3`; `core`; `orm` e `migrations`; `nestjs` e `cli`.
+5. Verifique os nove pacotes e revogue qualquer token temporário.
 6. Configure OIDC como descrito acima. Tags iniciais podem ser criadas com
    `pnpm changeset git-tag` e enviadas após revisão com `git push --follow-tags`.
 
 Esse procedimento é excepcional. Releases seguintes devem ocorrer pelo workflow OIDC.
+
+## Migration packages
+
+`@duraxis/migrations` and `@duraxis/cli` participate in workspace builds, Changesets,
+manifest/artifact validation, and tarball consumption checks. The CLI ships an ESM
+`duraxis` executable with an early runtime gate; synchronous TypeScript hooks are
+bundled into the ESM library; the CommonJS entry uses Node 24 require(ESM) to
+share the same API and hook state.
+TypeScript 5.9.3 is a pinned **runtime** dependency of the CLI's artifact identity
+and decorator loader; do not move it to devDependencies or silently upgrade it.
+
+`pack:check:built` installs all nine tarballs into an isolated consumer, exercises
+decorated TypeScript entities and disk-backed migrations, then compiles the same
+artifacts to ESM JavaScript and checks that applied identities still match. It also
+checks the installed executable, snapshots, validation, rollback, and data retention.
+No package is published by these checks. CI/release workflows run this
+command, so their dependency order includes both new packages automatically.
+
+Migration-enabled databases require the new Core for reserved metadata entries in
+full-tree operations; describe this restriction in release notes and do not
+downgrade Core after adoption. Existing format-1 databases need no conversion.
+
+## Node.js baseline
+
+All packages require Node.js >=24.15.0. CI and release setup-node steps read
+`.node-version`; `.nvmrc` matches it. Use `nvm install && nvm use` before installing.
+The workspace's `devEngines.runtime` and pnpm `engineStrict` reject unsupported
+runtimes, and the executable checks its runtime before dynamically importing the
+CLI. The separate `runtime.mjs` gate must ship in tarballs; the obsolete
+`ts-loader.mjs` must not. TypeScript hooks are bundled into the library.
+
+Raising this requirement is a breaking pre-1.0 minor release for all public
+packages, covered by Changesets. Keep the compiler identity settings and runtime
+TypeScript 5.9.3 pinned even when upgrading the workspace's native compiler.
+Node 24 type definitions and ES2022 TypeScript output prevent relying on Node
+25/26 APIs. Module-loading regression jobs cover Linux and Windows on 24.15.0;
+the packed consumer checks both programmatic exports and installed CLI commands.

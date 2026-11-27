@@ -49,4 +49,27 @@ O pacote depende somente de `@duraxis/storage` em runtime. Drivers são instalad
 separadamente. `@duraxis/orm` adiciona entidades e repositórios sobre esta API.
 
 Duraxis ainda está em `0.x`. As garantias efetivas dependem do driver; não há coordenação
-distribuída, e o formato persistido pode evoluir. Requer Node.js 22.12+.
+distribuída, e o formato persistido pode evoluir. Requer Node.js 24.15.0+.
+
+## Transactional schema evolution
+
+Transactions expose `getCollectionDefinitions()`, `alterCollection(name,
+definition)`, `dropCollection(name)`, and streaming `scanCollection(name)`.
+Catalog changes are visible to subsequent transaction operations. Replacement
+validates existing and pending documents against the final schema, including
+foreign keys; indexes rebuild when indexed field definitions change. Collection
+drops remove logical records and index roots while captured snapshots retain
+visibility. Physical deletion remains the garbage collector's responsibility.
+A dropped collection cannot be recreated in the same transaction.
+
+Trusted subsystems can use `getMetadata(namespace)` and `putMetadata(namespace,
+bytes)` for protected transactional metadata. Ordinary raw-key writes still
+reject reserved namespaces. This is an explicit internal extension mechanism,
+not access control against code with direct storage access. Metadata uses existing
+primary-tree entries and format-1 manifests. Older Core versions cannot perform
+all full-tree operations on databases containing these new reserved entries;
+upgrade Core before adopting migrations and do not downgrade migrated databases.
+
+Affected-schema validation stages final records in memory. Streaming reads do not
+bound transaction memory, and schema-mutated index queries may scan and sort.
+For versioned evolution use [`@duraxis/migrations`](../migrations/README.md).
