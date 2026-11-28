@@ -3,7 +3,7 @@ import "reflect-metadata";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Injectable, Module } from "@nestjs/common";
+import { Injectable, Logger, Module } from "@nestjs/common";
 import { Test, type TestingModule } from "@nestjs/testing";
 import { DuraxisDatabase } from "@duraxis/core";
 import {
@@ -18,7 +18,7 @@ import {
 } from "@duraxis/orm";
 import { AsyncDiskStorageDriver } from "@duraxis/storage-disk";
 import { MemoryStorageDriver } from "@duraxis/storage-memory";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   DuraxisModule,
   DuplicateDuraxisConnectionError,
@@ -30,6 +30,8 @@ import {
   getDuraxisRepositoryToken,
 } from "../index.js";
 import { DuraxisConnectionRegistry } from "../duraxis.registry.js";
+import type { DuraxisNestConnection } from "../duraxis.connection.js";
+import { getDuraxisConnectionToken } from "../duraxis.tokens.js";
 
 @Entity("nest_users")
 class User {
@@ -647,17 +649,38 @@ describe("initialization failures and lifecycle", () => {
     await expect(database.getCollectionDefinitions()).rejects.toThrow("closed");
   });
 
-  it("propagates shutdown failures", async () => {
+  it("reports shutdown failures and rejects explicit connection cleanup", async () => {
+    const storage = new FailingCloseStorage();
+    const close = vi.spyOn(storage, "close");
     const testingModule = await Test.createTestingModule({
       imports: [
         DuraxisModule.forRoot({
-          driver: () => new FailingCloseStorage(),
+          driver: () => storage,
           entities: [User],
           schema: { mode: "create" },
         }),
       ],
     }).compile();
-    await expect(testingModule.close()).rejects.toThrow("storage close failed");
+    const connection = testingModule.get<DuraxisNestConnection>(getDuraxisConnectionToken());
+    const errorLog = vi.spyOn(Logger, "error").mockImplementation(() => {});
+    try {
+      const failure: unknown = await connection.close().catch((cause: unknown) => cause);
+      expect(failure).toBeInstanceOf(Error);
+      expect(failure).toMatchObject({ message: "storage close failed" });
+      await expect(connection.onModuleDestroy()).rejects.toBe(failure);
+      await expect(connection.onApplicationShutdown()).rejects.toBe(failure);
+
+      // Nest 12 logs rejected lifecycle hooks while completing application shutdown.
+      await expect(testingModule.close()).resolves.toBeUndefined();
+      expect(errorLog).toHaveBeenCalledWith(failure, expect.any(String));
+      expect(close).toHaveBeenCalledOnce();
+    } finally {
+      try {
+        await testingModule.close();
+      } finally {
+        errorLog.mockRestore();
+      }
+    }
   });
 });
 

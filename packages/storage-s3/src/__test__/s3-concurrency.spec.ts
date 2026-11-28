@@ -1,5 +1,7 @@
 import "reflect-metadata";
 import { randomUUID } from "node:crypto";
+import { realpathSync } from "node:fs";
+import { createRequire } from "node:module";
 import { PutObjectCommand } from "@aws-sdk/client-s3";
 import { CommitOutcomeUnknownError, DuraxisDatabase } from "@duraxis/core";
 import { Column, Entity, PrimaryKey, type Repository } from "@duraxis/orm";
@@ -143,6 +145,16 @@ class UserService {
 
 @Module({ imports: [DuraxisModule.forFeature([User])], providers: [UserService] })
 class UserModule {}
+
+it("uses the same Nest runtime for the test container and Duraxis integration", () => {
+  const consumer = createRequire(import.meta.url);
+  const integration = createRequire(consumer.resolve("@duraxis/nestjs"));
+  const testing = createRequire(consumer.resolve("@nestjs/testing"));
+  for (const name of ["@nestjs/common", "@nestjs/core"]) {
+    expect(realpathSync(consumer.resolve(name))).toBe(realpathSync(integration.resolve(name)));
+    expect(realpathSync(testing.resolve(name))).toBe(realpathSync(integration.resolve(name)));
+  }
+});
 
 it.each([true, false])(
   "preserves Nest forRootAsync lifecycle with closeStorage=%s",

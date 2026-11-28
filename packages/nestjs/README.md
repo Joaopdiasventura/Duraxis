@@ -130,6 +130,15 @@ estáticos e substituição de métodos após a injeção não são suportados. 
 aguarda transações em andamento e rejeita novas transações; depois de remover a conexão, chamadas
 decoradas falham com `TransactionManagerNotFoundError`.
 
+Os métodos de fechamento da conexão e os hooks Duraxis rejeitam falhas de cleanup. No Nest 12,
+`app.close()` conclui o shutdown e o framework registra os erros rejeitados pelos hooks no logger;
+portanto, a resolução de `app.close()` não comprova que o storage fechou sem erro. Monitore esses
+registros e aguarde o fechamento explícito de recursos que você gerencia diretamente.
+
+A aplicação, seus testes e a integração Duraxis devem resolver a mesma instalação de
+`@nestjs/common` e `@nestjs/core`. Alinhe também `@nestjs/testing` para que os tokens de injeção
+pertençam ao mesmo runtime.
+
 Declare serviços em `providers` do módulo consumidor e registre entidades com `forFeature`.
 Para conexões nomeadas, explicite `connectionName` no decorator transacional. Chamadas por
 `this` aplicam as opções do método interno, inclusive propagação e regras de rollback.
