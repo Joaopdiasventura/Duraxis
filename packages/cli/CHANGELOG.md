@@ -1,5 +1,11 @@
 # @duraxis/cli
 
+## 0.5.1
+
+### Patch Changes
+
+- 7eb57c1: Resolve installed dependency metadata from the selected application's node_modules tree, including hoisted and linked packages, and use the PnP resolver only for active PnP installations. Prevent dependencies available only to CLI tooling or test loaders from being mistaken for application installations and suppressing requested upgrades.
+
 ## 0.5.0
 
 ### Minor Changes
