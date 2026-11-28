@@ -1,13 +1,31 @@
 import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
-import { readObject } from "../init/project-detector.js";
+import { dirname, join, resolve } from "node:path";
+import { exists, readObject } from "../init/project-detector.js";
+
 export async function installedPackage(
   root: string,
   name: string,
 ): Promise<Record<string, unknown> | undefined> {
-  let directory: string;
+  if (!/^(?:@[a-z0-9._-]+\/)?[a-z0-9][a-z0-9._-]*$/i.test(name)) return undefined;
+
+  let directory = resolve(root);
+  let plugAndPlay = false;
+  while (true) {
+    const path = join(directory, "node_modules", name, "package.json");
+    if (await exists(path)) {
+      const manifest = await readObject(path);
+      return manifest.name === name ? manifest : undefined;
+    }
+    plugAndPlay ||= await exists(join(directory, ".pnp.cjs"));
+    if (dirname(directory) === directory) break;
+    directory = dirname(directory);
+  }
+
+  // PnP installations have no node_modules tree; their active resolver owns lookup.
+  // Otherwise, do not inherit packages available only to the CLI or a test loader.
+  if (!plugAndPlay || !process.versions.pnp) return undefined;
   try {
-    directory = dirname(createRequire(join(root, "package.json")).resolve(name));
+    directory = dirname(createRequire(join(resolve(root), "package.json")).resolve(name));
   } catch {
     return undefined;
   }
