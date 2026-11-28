@@ -1,65 +1,31 @@
 # @duraxis/cli
 
-Standalone Duraxis migration tooling. Node.js 24.15.0 or newer is required. The CLI builds on
-`@duraxis/migrations` and the ORM's database-independent schema exporter.
+Project initialization, configuration, diagnostics, generators, dependency updates and migrations for Duraxis. Node.js 24.15.0 or newer is required.
 
 ## Quick start
 
 ```bash
-pnpm add @duraxis/core @duraxis/orm @duraxis/migrations @duraxis/storage-disk
-pnpm add -D @duraxis/cli
+npx --package @duraxis/cli@latest duraxis init
+# After local installation:
 pnpm exec duraxis init
+# Or with the executable on PATH:
+duraxis init
 ```
 
-Edit the generated config to import your decorated entities and open your storage:
-
-```ts
-import { fileURLToPath } from "node:url";
-import { defineDuraxisConfig } from "@duraxis/cli";
-import { DuraxisDatabase } from "@duraxis/core";
-import { AsyncDiskStorageDriver } from "@duraxis/storage-disk";
-import { User } from "./src/entities/user.entity.js";
-
-export default defineDuraxisConfig({
-  entities: [User],
-  migrations: {
-    directory: "./duraxis/migrations",
-    snapshots: "./duraxis/snapshots",
-    format: "ts",
-  },
-  async createDatabase() {
-    const storage = await AsyncDiskStorageDriver.open({
-      directory: fileURLToPath(new URL("./data/duraxis", import.meta.url)),
-    });
-    return new DuraxisDatabase({ storage });
-  },
-});
-```
+For a reproducible non-interactive persistent ORM project:
 
 ```bash
-pnpm exec duraxis migration:generate initial-schema
+duraxis init --framework standalone --driver disk --orm --migrations --package-manager pnpm --yes
+pnpm exec duraxis migration:generate initial
 pnpm exec duraxis migrate:up
-# Modify entity definitions to add an optional status column.
-pnpm exec duraxis migration:generate add-user-status
-pnpm exec duraxis migrate:diff
-pnpm exec duraxis migrate:up
-pnpm exec duraxis migrate:status
-pnpm exec duraxis migrate:check
-pnpm exec duraxis migrate:down --yes
+pnpm exec duraxis doctor
 ```
 
-Generated rollback rejects populated fields or collections it would remove. For
-production, review generated files, constraints, data transformations, and backups
-before applying or reverting. Never edit a shared or applied migration.
+Use `--no-install` for offline scaffolding, `--dry-run` to inspect a plan, and `--yes` for redirected input. Migrations are optional; Memory defaults to no migrations. NestJS requires ORM. Generated application factories share settings/entities with administration and do not import the CLI at runtime. Existing application files and executable configuration are preserved.
 
-Without a local installation, use the scoped package name explicitly:
+The [setup and administration guide](../../docs/CLI-SETUP.md) documents all options, package managers, storage configurations, named connections, environment provisioning, generated code, production deployment, safeguards and limitations.
 
-```bash
-npx --package @duraxis/cli duraxis --help
-```
-
-An unscoped `npx duraxis` does not identify this package. Install the dev dependency
-before using `pnpm exec duraxis`.
+`duraxis help` lists every command; `duraxis help init` lists every initialization option. New administration commands include `doctor`, `config:show`, `config:validate`, `config:set`, `connection:add`, `connection:list`, `storage:list`, `storage:check`, `generate:entity`, `generate:module`, and `upgrade --check/--apply`. An unscoped `npx duraxis` does not identify this package.
 
 ## Configuration and loading
 
@@ -72,8 +38,7 @@ above instead of depending on the command's working directory.
 
 `entities` accepts a class array or an async factory returning classes, allowing
 project-specific entity discovery. `migrations.format` is `ts` (default) or `js`.
-A `databases` object can hold named connection configs with the same three fields
-(`entities`, `migrations`, `createDatabase`). Select one with `--database <name>`;
+A `databases` object can hold named connection configs with a required `createDatabase` factory and optional `entities`/`migrations`. Select one with `--database <name>`;
 the top-level connection is the default.
 
 The factory returns an owned Core database, not a NestJS connection. The CLI closes
@@ -108,9 +73,7 @@ usual `reflect-metadata` dependency before decorated modules. Entity columns
 should declare their Core `type` explicitly. `tsconfig.json` path aliases,
 custom compiler plugins, `.tsx`/`.jsx`, and TypeScript package sources inside
 `node_modules` are not supported. Use relative imports or published package exports.
-When using a CommonJS config, load decorated entities and Duraxis connections
-from ESM with native dynamic imports. Mixing independent ESM and CommonJS copies
-of ORM decorators/Core constructors is unsupported; the CLI executes as ESM.
+Generated CommonJS configurations use `.cjs`/`.cts`, declare `moduleFormat: "cjs"`, and select matching CommonJS ORM/migration runners. Legacy wrappers without this declaration retain their ESM entity/factory contract. Generated migrations remain ESM in a type:module migration directory to preserve checksum identity. Avoid mixing independent ESM/CommonJS decorator registries within one entity graph.
 Config files and migrations are trusted executable code; keep module initialization
 free of database writes and external side effects.
 
@@ -141,11 +104,11 @@ releases that directory before invoking the CLI.
 Every command supports `--config`, `--database`, and `--json`. Unknown options and
 options inappropriate for a command are errors. Errors exit with code 1; success
 exits 0. `--json` emits machine-readable success results for inspection commands
-and JSON errors on stderr. No command requires an interactive prompt.
+and JSON errors on stderr. Initialization prompts on a terminal unless `--yes` is provided; redirected input never waits for prompts.
 
 | Command                              | Behavior and options                                                                                                                                                                                        |
 | ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `init`                               | Creates a config, migration/snapshot directories, and an empty `baseline.json`; refuses existing files. Does not modify application source.                                                                 |
+| `init`                               | Creates a managed project and shared application factories; installs compatible dependencies by default. Migrations and ORM are optional. Use --dry-run and --no-install as needed.                         |
 | `migration:create <name>`            | Creates a throwing manual template. Complete it and provide an expected snapshot before use.                                                                                                                |
 | `migration:snapshot --schema <file>` | Saves an intended snapshot for the latest manual migration from a JSON array of Core collection definitions. Never overwrites a snapshot. Application verifies the result atomically.                       |
 | `migration:generate <name>`          | Compares the latest local snapshot with exported entities and generates a self-contained migration/snapshot pair. No file on no-change. `--allow-destructive` authorizes generating removals.               |

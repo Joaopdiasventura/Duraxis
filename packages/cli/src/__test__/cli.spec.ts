@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { execFile } from "node:child_process";
+import { execFile, fork } from "node:child_process";
 import { promisify } from "node:util";
 import {
   mkdtemp,
@@ -36,7 +36,7 @@ async function setup() {
       process.platform == "win32" ? "junction" : "dir",
     );
   await writeFile(join(root, "package.json"), '{"type":"module"}');
-  await cli(root, "init");
+  await cli(root, "init", "--orm", "--migrations", "--no-install", "--yes");
   await writeFile(
     join(root, "entities.ts"),
     `import { Entity, PrimaryKey, Column } from "@duraxis/orm";
@@ -80,7 +80,9 @@ describe("CLI", () => {
   });
   it("rejects unfinished migrations, path traversal, invalid options and overwrites", async () => {
     const root = await setup();
-    await expect(cli(root, "init")).rejects.toThrow();
+    const existingConfig = await readFile(join(root, "duraxis.config.ts"), "utf8");
+    expect((await cli(root, "init")).stdout).toContain("already-initialized");
+    expect(await readFile(join(root, "duraxis.config.ts"), "utf8")).toBe(existingConfig);
     await expect(cli(root, "migration:create", "../escape")).rejects.toThrow();
     await expect(cli(root, "migrate:down", "--dry-run")).rejects.toThrow();
     await cli(root, "migration:create", "manual");
@@ -166,3 +168,52 @@ describe("CLI", () => {
     expect(await readFile(snapshot, "utf8")).toBe("keep");
   });
 });
+
+it("cancels an active migration across processes and releases Disk ownership", async () => {
+  const root = await setup();
+  await cli(root, "migration:generate", "cancelled");
+  const directory = join(root, "duraxis/migrations");
+  const file = (await readdir(directory)).find((name) => name.endsWith(".ts"))!;
+  const id = file.slice(0, -3);
+  const snapshot: import("@duraxis/migrations").SchemaSnapshot = JSON.parse(
+    await readFile(join(root, "duraxis/snapshots", `${id}.json`), "utf8"),
+  );
+  await writeFile(
+    join(directory, file),
+    `import {defineMigration} from "@duraxis/migrations";export default defineMigration({id:${JSON.stringify(id)},async up(context){context.schema.createCollection(${JSON.stringify(snapshot.collections[0])});const keepalive=setInterval(()=>{},1000);context.signal.addEventListener("abort",()=>clearInterval(keepalive),{once:true});process.send?.("migration-ready");await new Promise(()=>{});}});`,
+  );
+  const child = fork(bin, ["migrate:up", "--json"], {
+    cwd: root,
+    stdio: ["ignore", "pipe", "pipe", "ipc"],
+  });
+  let stderr = "";
+  child.stderr?.on("data", (chunk) => {
+    stderr += String(chunk);
+  });
+  child.stdout?.resume();
+  const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) =>
+    child.once("close", (code, signal) => resolve({ code, signal })),
+  );
+  const ready = new Promise<void>((resolve, reject) => {
+    child.once("message", (message) =>
+      message === "migration-ready"
+        ? resolve()
+        : reject(new Error("Unexpected migration readiness message")),
+    );
+    child.once("error", reject);
+    child.once("exit", () => reject(new Error("Migration exited before readiness")));
+  });
+  const deadline = setTimeout(() => child.kill("SIGKILL"), 15000);
+  try {
+    await ready;
+    expect(child.kill("SIGINT")).toBe(true);
+    const result = await closed;
+    expect(result, stderr).toEqual({ code: 1, signal: null });
+    expect(stderr).toContain('"code":"CANCELLED"');
+    expect(stderr).toContain("publication may have completed");
+  } finally {
+    clearTimeout(deadline);
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+  }
+  expect((await cli(root, "migrate:status")).stdout).toContain("0 applied, 1 pending");
+}, 25000);

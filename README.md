@@ -19,7 +19,7 @@ entre versões menores; avalie os testes e os limites documentados antes de usar
 | `@duraxis/orm`             | Entidades com decorators, schema, repositórios, queries e transações ORM.         |
 | `@duraxis/nestjs`          | Módulos dinâmicos, injeção e transações declarativas para NestJS.                 |
 | `@duraxis/migrations`      | Migrações transacionais, histórico protegido, snapshots e comparação de schemas.  |
-| `@duraxis/cli`             | CLI para gerar, aplicar, reverter e validar migrações.                            |
+| `@duraxis/cli`             | Project setup, configuration, diagnostics, administration and migrations.         |
 | `@duraxis/storage-testkit` | Suíte interna de conformidade para drivers; pacote privado, não publicado.        |
 
 As dependências de execução seguem a direção `storage → drivers/core → orm → nestjs`.
@@ -155,3 +155,7 @@ existing applications do not require migration configuration.
 ## Production resource and lifecycle limits
 
 See the [production hardening guide](docs/PRODUCTION-HARDENING.md) for bounded defaults, cancellation, verified maintenance, tenant trust boundaries, encrypted cursors, upgrade instructions and remaining pilot limitations. Core rejects storage adapters without bounded-read capability; destructive shared-storage garbage collection is unsupported.
+
+## CLI project setup
+
+Run `npx --package @duraxis/cli@latest duraxis init` to configure shared application factories, optional ORM/migrations and a storage driver. See the [setup and administration guide](docs/CLI-SETUP.md) for non-interactive options, NestJS ownership, deployment and diagnostics.

@@ -6,9 +6,10 @@ import type { DuraxisDatabase } from "@duraxis/core";
 import type { EntityClass } from "@duraxis/orm";
 
 export interface DuraxisConnectionConfig {
-  readonly entities:
+  readonly moduleFormat?: "esm" | "cjs";
+  readonly entities?:
     readonly EntityClass[] | (() => readonly EntityClass[] | Promise<readonly EntityClass[]>);
-  readonly migrations: {
+  readonly migrations?: {
     readonly directory: string;
     readonly snapshots: string;
     readonly format?: "ts" | "js";
@@ -80,10 +81,17 @@ export async function loadConfig(
   if (
     !config ||
     typeof config.createDatabase != "function" ||
-    (!Array.isArray(config.entities) && typeof config.entities != "function") ||
-    typeof config.migrations?.directory != "string" ||
-    typeof config.migrations.snapshots != "string" ||
-    (config.migrations.format !== undefined && !["ts", "js"].includes(config.migrations.format))
+    (config.moduleFormat !== undefined &&
+      config.moduleFormat !== "esm" &&
+      config.moduleFormat !== "cjs") ||
+    (config.entities !== undefined &&
+      !Array.isArray(config.entities) &&
+      typeof config.entities != "function") ||
+    (config.migrations !== undefined &&
+      (typeof config.migrations.directory != "string" ||
+        typeof config.migrations.snapshots != "string" ||
+        (config.migrations.format !== undefined &&
+          !["ts", "js"].includes(config.migrations.format))))
   )
     throw new Error("Invalid Duraxis configuration or unknown named database");
 
@@ -92,4 +100,15 @@ export async function loadConfig(
 
 export async function readJSON<T>(path: string): Promise<T> {
   return JSON.parse(await readFile(path, "utf8")) as T;
+}
+
+export function requireMigrationConfig(
+  config: DuraxisConnectionConfig,
+): asserts config is DuraxisConnectionConfig & {
+  migrations: NonNullable<DuraxisConnectionConfig["migrations"]>;
+} {
+  if (!config.migrations)
+    throw new Error(
+      "Migrations are disabled for this connection. Enable them before running migration commands.",
+    );
 }
