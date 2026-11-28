@@ -184,3 +184,22 @@ export type {
 } from "./resources/resource-manager.js";
 
 export type { CursorKeyring } from "./query/model/cursor.js";
+
+export {
+  defineDuraxisConfig,
+  isDuraxisConfiguration,
+  selectDuraxisConnection,
+  normalizeDuraxisConnection,
+  duraxisDriverContext,
+  validateConnectionName,
+  createDatabase,
+} from "./config.js";
+
+export type {
+  DuraxisConfiguration,
+  DuraxisConnectionOptions,
+  DuraxisConnectionsOptions,
+  DuraxisDriverContext,
+  EntityDiscoveryOptions,
+  ConfigEntity,
+} from "./config.js";

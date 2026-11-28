@@ -6,7 +6,6 @@ import { transactionalOptions } from "./transactional.metadata.js";
 
 const MANAGERS = Symbol("Duraxis transaction managers");
 const bindings = new WeakMap<object, TransactionManagerRegistry>();
-const defaultConnections = new WeakMap<object, string>();
 const injectablePrototypes = new WeakSet<object>();
 const wrappers = new WeakSet<Function>();
 const LIFECYCLE_METHODS = new Set<PropertyKey>([
@@ -32,10 +31,6 @@ export function injectTransactionManagers(prototype: object): void {
   Inject(TransactionManagerRegistry)(prototype, MANAGERS);
 }
 
-export function setTransactionalDefaultConnection(instance: object, name: string): void {
-  defaultConnections.set(instance, name);
-}
-
 export function wrapTransactionalMethod(method: Function, property: PropertyKey): Function {
   if (wrappers.has(method)) return method;
 
@@ -47,9 +42,7 @@ export function wrapTransactionalMethod(method: Function, property: PropertyKey)
 
     const options = transactionalOptions(this, wrapped) ?? {};
 
-    const name = normalizeDuraxisConnectionName(
-      options.connectionName ?? defaultConnections.get(this),
-    );
+    const name = normalizeDuraxisConnectionName(options.connectionName);
 
     return managers
       .get(name)

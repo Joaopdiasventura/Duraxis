@@ -632,10 +632,7 @@ export class AsyncDiskStorageDriver implements StorageDriver {
       for (const [key, value] of this.entries)
         if (key.startsWith(prefix)) {
           if (result.length >= 100_000)
-            throw new StorageError(
-              "Legacy listing limit exceeded; use iterate()",
-              "RESOURCE_LIMIT",
-            );
+            throw new StorageError("Listing limit exceeded; use iterate()", "RESOURCE_LIMIT");
           result.push({ key, version: value.version, createdAt: value.createdAt });
         }
 

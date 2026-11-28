@@ -2,8 +2,11 @@ import { join, basename } from "node:path";
 import { addFile, type FilePlan } from "../filesystem/file-plan.js";
 import { exists, stringMap, type ProjectContext } from "./project-detector.js";
 import type { InitializationOptions } from "./initialization-options.js";
-import { projectSources, extensions } from "../templates/project.js";
-import type { ManagedProject } from "./managed-project.js";
+import { projectSources, extensions, configurationSource } from "../templates/project.js";
+export interface ProjectConfiguration {
+  defaultConnection: string;
+  connections: Record<string, InitializationOptions>;
+}
 export function requiredPackages(options: InitializationOptions): string[] {
   return [
     "@duraxis/core",
@@ -22,34 +25,20 @@ export function requiredPackages(options: InitializationOptions): string[] {
     ...(options.migrations ? ["@duraxis/migrations"] : []),
   ];
 }
-export function configSource(managed: ManagedProject): string {
-  const options = managed.connections[managed.defaultConnection]!;
-  const typed = options.language === "typescript";
-  const esm = options.moduleFormat === "esm";
-  const { runtime } = extensions(options);
-  const entries = Object.entries(managed.connections).map(([name, connection]) => {
-    const base = `${connection.sourceDir}/duraxis${name === "default" ? "" : `/connections/${name}`}`;
-    const module = `./${base}/database.${extensions(connection).runtime}`;
-    const entities = `./${base}/entities.${extensions(connection).runtime}`;
-    return `${JSON.stringify(name)}: { moduleFormat: ${JSON.stringify(connection.moduleFormat)}, createDatabase: async () => (await import(${JSON.stringify(module)})).createDatabase(${JSON.stringify(name)}), ${connection.orm ? `entities: async () => (await import(${JSON.stringify(entities)})).entities,` : ""} ${connection.migrations ? `migrations: { directory: ${JSON.stringify(name === "default" ? "./duraxis/migrations" : `./duraxis/${name}/migrations`)}, snapshots: ${JSON.stringify(name === "default" ? "./duraxis/snapshots" : `./duraxis/${name}/snapshots`)}, format: ${JSON.stringify(typed ? "ts" : "js")} },` : ""} }`;
-  });
-  return `// Managed by Duraxis. Shared factories are application runtime modules.\nconst databases = {\n${entries.join(",\n")}\n};\n${esm ? "export default" : typed ? "export =" : "module.exports ="} { ...databases[${JSON.stringify(managed.defaultConnection)}], databases };\n`;
-}
+export { configurationSource as configSource } from "../templates/project.js";
 export async function planInitialization(
   context: ProjectContext,
   options: InitializationOptions,
   dependencies: Record<string, string>,
   devDependencies: Record<string, string>,
-  existing?: ManagedProject,
   name = "default",
 ): Promise<FilePlan> {
-  if (!existing && context.configFiles.length)
-    throw new Error(
-      "Existing executable Duraxis configuration found. Preserve it; use manual integration or a separate project directory.",
-    );
-  const managed: ManagedProject = existing
-    ? { ...existing, connections: { ...existing.connections, [name]: options } }
-    : { version: 1, defaultConnection: "default", connections: { default: options } };
+  if (context.configFiles.length)
+    throw new Error("Existing Duraxis configuration found; no files were written.");
+  const managed: ProjectConfiguration = {
+    defaultConnection: "default",
+    connections: { default: options },
+  };
   const plan: FilePlan = {
     root: context.root,
     files: [],
@@ -59,43 +48,49 @@ export async function planInitialization(
     devDependencies,
     commands: [],
   };
-  if (existing?.connections[name])
-    throw new Error("Connection already exists; use config:set for managed settings");
-  await addFile(plan, "duraxis.project.json", JSON.stringify(managed, null, 2) + "\n", !!existing);
 
   const sources = projectSources(options, name);
   for (const [path, content] of Object.entries(sources)) {
     await addFile(plan, path, content);
   }
-  const defaultOptions = managed.connections[managed.defaultConnection]!;
-  if (
-    existing &&
-    (options.language !== defaultOptions.language ||
-      options.moduleFormat !== defaultOptions.moduleFormat)
-  )
-    throw new Error("Managed connections must share language and module format");
-  if (existing) {
+  const configPath = `${options.sourceDir}/duraxis.config.${extensions(options).source}`;
+  await addFile(plan, configPath, configurationSource(managed));
+  if (options.framework === "nestjs") {
     const { readFile } = await import("node:fs/promises");
-    if (
-      (await readFile(
-        join(context.root, `duraxis.config.${extensions(defaultOptions).source}`),
-        "utf8",
-      )) !== configSource(existing)
-    )
-      throw new Error(
-        "Executable configuration was edited; add the named connection manually. No files were written.",
+    const { integrateNestModule } = await import("./nest-integration.js");
+    const candidates = context.nestModules.filter(
+      (path) =>
+        /(?:^|\/)app\.module\.[cm]?[jt]s$/.test(path) && path.startsWith(options.sourceDir + "/"),
+    );
+    if (candidates.length === 0 && !context.hasManifest) {
+      const app = `${options.sourceDir}/app.module.${extensions(options).source}`;
+      const es = options.language === "typescript" || options.moduleFormat === "esm";
+      const imports = es
+        ? `import { Module } from "@nestjs/common";\nimport { DuraxisModule } from "@duraxis/nestjs";\nimport duraxisConfig from "./duraxis.config.js";`
+        : `const { Module } = require("@nestjs/common");\nconst { DuraxisModule } = require("@duraxis/nestjs");\nconst duraxisConfig = require("./duraxis.config.js");`;
+      const metadata = "{ imports: [DuraxisModule.forRoot(duraxisConfig)] }";
+      await addFile(
+        plan,
+        app,
+        imports +
+          "\n" +
+          (options.language === "typescript"
+            ? `@Module(${metadata})\nexport class AppModule {}\n`
+            : `${es ? "export " : ""}class AppModule {}\nModule(${metadata})(AppModule);\n${es ? "" : "exports.AppModule = AppModule;\n"}`),
       );
+    } else {
+      if (candidates.length !== 1)
+        throw new Error(
+          "Select one NestJS application using --source-dir (and --directory for its package). Expected one existing app.module.ts; no files were written.",
+        );
+      const app = candidates[0]!;
+      const original = await readFile(join(context.root, app), "utf8");
+      await addFile(plan, app, integrateNestModule(original, app, configPath), true);
+    }
   }
-  await addFile(
-    plan,
-    `duraxis.config.${extensions(defaultOptions).source}`,
-    configSource(managed),
-    !!existing,
-  );
   if (options.migrations) {
     const base = name === "default" ? "duraxis" : `duraxis/${name}`;
     plan.directories.push(`${base}/migrations`, `${base}/snapshots`);
-    await addFile(plan, `${base}/migrations/package.json`, '{"type":"module"}\n');
     const { createSnapshot } = await import("@duraxis/migrations");
     await addFile(
       plan,
@@ -103,11 +98,7 @@ export async function planInitialization(
       JSON.stringify(createSnapshot(null, null, []), null, 2) + "\n",
     );
   }
-  if (
-    !existing &&
-    options.language === "typescript" &&
-    !(await exists(join(context.root, "tsconfig.json")))
-  )
+  if (options.language === "typescript" && !(await exists(join(context.root, "tsconfig.json"))))
     await addFile(
       plan,
       "tsconfig.json",
@@ -183,9 +174,27 @@ export async function planInitialization(
         /DURAXIS_/g,
         name === "default" ? "DURAXIS_" : `DURAXIS_${name.toUpperCase().replace(/-/g, "_")}_`,
       ) + "\n";
-  if (!(await exists(join(context.root, ".env.example")))) await addFile(plan, ".env.example", env);
-  else
-    plan.warnings.push("Existing .env.example preserved. Add new environment references manually.");
+  const envPath = join(context.root, ".env.example");
+  const beforeEnv = (await exists(envPath)) ? await read.readFile(envPath, "utf8") : "";
+  const declared = new Set(
+    beforeEnv
+      .split(/\r?\n/)
+      .map((line) => /^\s*(?:export\s+)?([A-Z_][A-Z0-9_]*)\s*=/.exec(line)?.[1])
+      .filter(Boolean),
+  );
+  const additions = env
+    .split("\n")
+    .filter((line) => line && !line.startsWith("#") && !declared.has(line.split("=")[0]));
+  if (additions.length)
+    await addFile(
+      plan,
+      ".env.example",
+      beforeEnv +
+        (beforeEnv && !beforeEnv.endsWith("\n") ? "\n" : "") +
+        additions.join("\n") +
+        "\n",
+      true,
+    );
   const scripts = stringMap(context.manifest.scripts);
   if (options.migrations && scripts["duraxis:status"] === undefined)
     scripts["duraxis:status"] = "duraxis migrate:status";
@@ -210,6 +219,12 @@ export async function planInitialization(
         }
       : {}),
     scripts,
+    ...(Object.keys(dependencies).length
+      ? { dependencies: { ...context.dependencies, ...dependencies } }
+      : {}),
+    ...(Object.keys(devDependencies).length
+      ? { devDependencies: { ...context.devDependencies, ...devDependencies } }
+      : {}),
   };
   await addFile(
     plan,
@@ -227,7 +242,7 @@ export async function planInitialization(
     );
   if (options.framework === "nestjs")
     plan.warnings.push(
-      `Import ApplicationDuraxisModule from ./${options.sourceDir}/duraxis/${name === "default" ? "" : `connections/${name}/`}duraxis.module.${extensions(options).runtime} in AppModule.imports; enableShutdownHooks() in main. Existing application code is preserved.`,
+      "Duraxis registered directly in AppModule. Enable shutdown hooks in main for operating-system signal cleanup.",
     );
   if (options.migrations)
     plan.warnings.push(

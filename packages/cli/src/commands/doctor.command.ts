@@ -1,11 +1,8 @@
 import { satisfies } from "../dependencies/version-compatibility.js";
 import { existsSync } from "node:fs";
-import { join, delimiter } from "node:path";
+import { join, delimiter, dirname } from "node:path";
 import { createRequire } from "node:module";
-import { exists, record, stringMap, type ProjectContext } from "../init/project-detector.js";
-import type { ManagedProject } from "../init/managed-project.js";
-import { requiredPackages } from "../init/initialization-planner.js";
-import { installedPackage } from "../dependencies/installed-package.js";
+import { exists, type ProjectContext } from "../init/project-detector.js";
 interface Diagnostic {
   level: "PASS" | "WARN" | "FAIL" | "SKIP";
   check: string;
@@ -19,17 +16,28 @@ export function available(project: ProjectContext, name: string): boolean {
   )
     return false;
   try {
-    createRequire(join(project.root, "package.json")).resolve(name);
+    const require = createRequire(join(project.root, "package.json"));
+    let installed = false;
+    let directory = project.root;
+    while (true) {
+      if (
+        existsSync(join(directory, ".pnp.cjs")) ||
+        existsSync(join(directory, "node_modules", name))
+      ) {
+        installed = true;
+        break;
+      }
+      if (dirname(directory) === directory) break;
+      directory = dirname(directory);
+    }
+    if (!installed) return false;
+    require.resolve(name);
     return true;
   } catch {
     return false;
   }
 }
-export async function diagnostics(
-  project: ProjectContext,
-  managed?: ManagedProject,
-  selected = "default",
-): Promise<Diagnostic[]> {
+export async function diagnostics(project: ProjectContext): Promise<Diagnostic[]> {
   const checks: Diagnostic[] = [];
   const add = (level: Diagnostic["level"], check: string, message: string) =>
     checks.push({ level, check, message });
@@ -85,7 +93,7 @@ export async function diagnostics(
           ? "PASS"
           : "WARN",
         "typescript",
-        "Legacy ORM entities require experimentalDecorators:true, emitDecoratorMetadata:true, useDefineForClassFields:false; generated .mts/.cts modules require NodeNext",
+        "ORM entities require experimentalDecorators:true, emitDecoratorMetadata:true, useDefineForClassFields:false; source configs follow package module semantics; NodeNext is supported",
       );
     }
   } else
@@ -94,110 +102,66 @@ export async function diagnostics(
       "typescript",
       "No tsconfig.json; use explicit fields with JavaScript decorator functions",
     );
-  if (!managed) {
-    add(
-      project.configFiles.length ? "WARN" : "FAIL",
-      "configuration",
-      project.configFiles.length
-        ? "Executable configuration detected, not evaluated. Use config:validate --evaluate only for trusted code."
-        : "Run duraxis init",
-    );
-    return checks;
-  }
-  add(
-    "PASS",
-    "project-files",
-    `Source ${project.sourceDir}; module candidates: ${project.nestModules.join(", ") || "none"}; entry points: ${project.entryPoints.join(", ") || "none"}; existing migration directories: ${project.migrationDirectories.join(", ") || "none"}; .gitignore: ${project.hasGitignore ? "present" : "absent"}. Inspection is bounded and does not execute source.`,
-  );
-  const options = managed.connections[selected];
-  if (!options) {
-    add("FAIL", "connection", "Unknown named connection");
-    return checks;
-  }
-  add(
-    "PASS",
-    "configuration",
-    `Managed version 1; connections: ${Object.keys(managed.connections).join(", ")}`,
-  );
-  for (const name of [...requiredPackages(options), "@duraxis/cli"])
-    add(
-      available(project, name) ? "PASS" : "FAIL",
-      `package:${name}`,
-      available(project, name)
-        ? "Resolvable without executing package code"
-        : `Install ${name} in ${project.root}`,
-    );
-  for (const name of requiredPackages(options)) {
-    const manifest = await installedPackage(project.root, name);
-    if (!manifest) continue;
+  if (project.configFiles.length === 1) {
     try {
-      if (record(manifest.engines) && typeof manifest.engines.node === "string")
-        add(
-          satisfies(process.versions.node, manifest.engines.node) ? "PASS" : "FAIL",
-          `engines:${name}`,
-          `Installed ${name} Node.js engine compatibility`,
-        );
-      for (const [peer, range] of Object.entries(stringMap(manifest.peerDependencies))) {
-        const installed = await installedPackage(project.root, peer);
-        const peerMeta = record(manifest.peerDependenciesMeta)
-          ? manifest.peerDependenciesMeta[peer]
-          : undefined;
-        if (!installed && record(peerMeta) && peerMeta.optional === true) continue;
-        add(
-          installed && typeof installed.version === "string" && satisfies(installed.version, range)
-            ? "PASS"
-            : "FAIL",
-          `peer:${name}:${peer}`,
-          `Requires ${peer} ${range}; install compatible peer dependencies`,
-        );
+      const { inspectStaticConfig, property } = await import("../init/static-config.js");
+      const { readFile } = await import("node:fs/promises");
+      const inspection = inspectStaticConfig(
+        await readFile(join(project.root, project.configFiles[0]!), "utf8"),
+        project.configFiles[0]!,
+      );
+      const ts = (await import("typescript")).default;
+      const packages = new Set(["@duraxis/core"]);
+      for (const statement of inspection.ast.statements) {
+        if (ts.isImportDeclaration(statement) && ts.isStringLiteral(statement.moduleSpecifier))
+          packages.add(statement.moduleSpecifier.text);
+        if (ts.isVariableStatement(statement))
+          for (const declaration of statement.declarationList.declarations) {
+            const call = declaration.initializer;
+            if (
+              call &&
+              ts.isCallExpression(call) &&
+              call.expression.getText(inspection.ast) === "require" &&
+              call.arguments[0] &&
+              ts.isStringLiteral(call.arguments[0])
+            )
+              packages.add(call.arguments[0].text);
+          }
       }
+      for (const connection of inspection.connections.values()) {
+        if (property(connection, "entities") || property(connection, "autoLoadEntities"))
+          packages.add("@duraxis/orm");
+        const migrations = property(connection, "migrations");
+        if (migrations && migrations.initializer.kind !== ts.SyntaxKind.FalseKeyword)
+          packages.add("@duraxis/migrations");
+      }
+      if (project.nestjs) packages.add("@duraxis/nestjs");
+      for (const name of packages)
+        if (name.startsWith("@duraxis/"))
+          add(
+            available(project, name) ? "PASS" : "FAIL",
+            `package:${name}`,
+            `Runtime dependency ${name} must be installed in the application`,
+          );
+      add(
+        "PASS",
+        "static-configuration",
+        `Connections: ${[...inspection.connections.keys()].join(", ")}; no executable code evaluated`,
+      );
     } catch {
       add(
         "WARN",
-        `compatibility:${name}`,
-        "Installed metadata uses unsupported version range syntax; verify compatibility manually",
+        "static-configuration",
+        "Dynamic or malformed configuration; inspect manually or use config:validate --evaluate for trusted code",
       );
     }
   }
   add(
-    options.framework !== "nestjs" || options.orm ? "PASS" : "FAIL",
-    "framework",
-    `${options.framework}${options.framework === "nestjs" ? "; import generated module and enableShutdownHooks()" : ""}`,
-  );
-  if (options.cursorKeyEnv)
-    add(
-      /^[a-fA-F0-9]{64}$/.test(process.env[options.cursorKeyEnv] ?? "") ? "PASS" : "FAIL",
-      "cursor-key",
-      `Provision ${options.cursorKeyEnv} securely as 32 bytes in hex (value redacted)`,
-    );
-  if (options.driver === "s3")
-    add(
-      options.bucket || process.env.DURAXIS_S3_BUCKET ? "PASS" : "FAIL",
-      "storage",
-      "S3 configuration only; credentials use the default AWS chain, connectivity not tested",
-    );
-  else
-    add(
-      "PASS",
-      "storage",
-      options.driver === "memory"
-        ? "Volatile storage; independent CLI processes do not share data"
-        : options.driver === "disk"
-          ? "Exclusive directory ownership required; no automatic lock recovery"
-          : "Custom implementation must enforce conditional operations and bounded reads",
-    );
-  if (options.migrations) {
-    const base = selected === "default" ? "duraxis" : `duraxis/${selected}`;
-    add(
-      (await exists(join(project.root, base, "snapshots/baseline.json"))) ? "PASS" : "FAIL",
-      "migrations",
-      "Baseline and directories checked statically; use migrate:check --offline for artifact validation (executes trusted migration modules)",
-    );
-  } else add("SKIP", "migrations", "Disabled");
-  add(
-    "SKIP",
-    "connectivity",
-    "No database opened; use storage:check --live explicitly where supported",
+    project.configFiles.length ? "WARN" : "FAIL",
+    "configuration",
+    project.configFiles.length
+      ? "Executable configuration detected, not evaluated. Use config:validate --evaluate only for trusted code."
+      : "Run duraxis init",
   );
   return checks;
 }

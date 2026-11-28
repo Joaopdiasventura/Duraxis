@@ -50,7 +50,7 @@ O compilador nativo TypeScript 7 serve ao workspace. A CLI mantém TypeScript 5.
 como dependência de produção para transpilação de decorators e identidade estável
 de migrações; essa separação é intencional.
 
-A CLI carrega configurações, entidades com decorators legados e migrações TypeScript
+A CLI carrega configurações, entidades com decorators TypeScript e migrações TypeScript
 internamente, sem flags experimentais nem instalação de outro transpiler.
 Imports locais NodeNext como `./entities.js` resolvem `entities.ts` quando o
 JavaScript não existe. Consulte os [formatos e limites do loader](packages/cli/README.md#configuration-and-loading).
@@ -141,7 +141,7 @@ application, rollback, drift checks, and existing-database baselines.
 pnpm add @duraxis/migrations
 pnpm add -D @duraxis/cli
 pnpm exec duraxis init
-# Configure entities and createDatabase() in duraxis.config.ts.
+# Configure a driver and autoLoadEntities in src/duraxis.config.ts.
 pnpm exec duraxis migration:generate initial-schema
 pnpm exec duraxis migrate:up
 pnpm exec duraxis migrate:check
@@ -158,4 +158,4 @@ See the [production hardening guide](docs/PRODUCTION-HARDENING.md) for bounded d
 
 ## CLI project setup
 
-Run `npx --package @duraxis/cli@latest duraxis init` to configure shared application factories, optional ORM/migrations and a storage driver. See the [setup and administration guide](docs/CLI-SETUP.md) for non-interactive options, NestJS ownership, deployment and diagnostics.
+`npx --package @duraxis/cli@latest duraxis init` generates one configuration inside your source root and registers Duraxis directly in an existing NestJS AppModule. Standalone applications use `createDatabase(config)` from Core or `createORM(config)` from ORM. Runtime installations do not require CLI development dependencies. See the [configuration API and examples](docs/CLI-SETUP.md) and [setup guide](docs/CLI-SETUP.md).

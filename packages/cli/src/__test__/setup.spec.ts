@@ -207,7 +207,6 @@ describe("project detection and safe plans", () => {
     ]);
     expect(unsafeRoot.code).toBe(1);
     expect(unsafeRoot.errors).toContain("target the workspace root");
-    expect(await readdir(root)).not.toContain("duraxis.project.json");
   });
   it("rolls back controlled files and rejects symlink escapes and stale plans", async () => {
     const root = await temporary();
@@ -279,6 +278,11 @@ describe("project detection and safe plans", () => {
       join(root, "package.json"),
       JSON.stringify({ dependencies: { "@nestjs/core": "^12.0.0" } }),
     );
+    await mkdir(join(root, "src"));
+    await writeFile(
+      join(root, "src/app.module.ts"),
+      'import { Module } from "@nestjs/common"; @Module({}) export class AppModule {}',
+    );
     const questions: string[] = [];
     const automatic = await invoke(
       root,
@@ -338,14 +342,9 @@ describe("generated applications", () => {
             ]);
             expect(result.errors).toBe("");
             expect(result.code).toBe(0);
-            const source =
-              language === "typescript"
-                ? moduleFormat === "esm"
-                  ? "mts"
-                  : "cts"
-                : moduleFormat === "esm"
-                  ? "mjs"
-                  : "cjs";
+            const source = language === "typescript" ? "ts" : "js";
+            expect(await readdir(join(root, "src"))).toContain(`duraxis.config.${source}`);
+            expect(await readdir(join(root, "src"))).not.toContain("duraxis");
             if (language === "typescript") {
               const configuration = ts.readConfigFile(join(root, "tsconfig.json"), ts.sys.readFile);
               const parsed = ts.parseJsonConfigFileContent(configuration.config, ts.sys, root);
@@ -357,16 +356,19 @@ describe("generated applications", () => {
               program.emit();
             }
             const applicationDir = language === "typescript" ? "dist" : "src";
-            const emittedExtension = moduleFormat === "esm" ? "mjs" : "cjs";
+            const emittedExtension = "js";
             const script = `import assert from "node:assert/strict";
 import { loadConfig } from "@duraxis/cli";
 import { pathToFileURL } from "node:url";
+import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
 const loaded = await loadConfig(process.cwd());
 assert.equal(loaded.config.migrations, undefined);
 const initialDatabase = await loaded.config.createDatabase(); await initialDatabase.close({closeStorage:true});
-const factory = await import(pathToFileURL(${JSON.stringify(join(root, `${applicationDir}/duraxis/database.${emittedExtension}`))}).href);
-${driver !== "s3" ? `const orm = await factory.createORM(); const {entities} = await import(pathToFileURL(${JSON.stringify(join(root, `${applicationDir}/duraxis/entities.${emittedExtension}`))}).href); await orm.getRepository(entities[0]).insert({id:"one", name:"example"}); assert.equal((await orm.getRepository(entities[0]).find()).length,1); await orm.close();` : ""}
-${framework === "nestjs" ? `const integration = await import(pathToFileURL(${JSON.stringify(join(root, `${applicationDir}/duraxis/duraxis.module.${emittedExtension}`))}).href); assert.ok(integration.ApplicationDuraxisModule);` : ""}
+const configuration = await import(pathToFileURL(${JSON.stringify(join(root, `${applicationDir}/duraxis.config.${emittedExtension}`))}).href);
+const config = ${moduleFormat === "cjs" && language === "typescript" ? "configuration.default.default" : "configuration.default"};
+${driver !== "s3" ? `const ormModule = ${moduleFormat === "cjs" ? 'require("@duraxis/orm")' : 'await import("@duraxis/orm")'}; const orm = await ormModule.createORM(config); const entityModule = await import(pathToFileURL(${JSON.stringify(join(root, `${applicationDir}/features/default/example.entity.${emittedExtension}`))}).href); const entity = entityModule.Example; await orm.getRepository(entity).insert({id:"one", name:"example"}); assert.equal((await orm.getRepository(entity).find()).length,1); await orm.close();` : ""}
+${framework === "nestjs" ? `const integration = await import(pathToFileURL(${JSON.stringify(join(root, `${applicationDir}/app.module.${emittedExtension}`))}).href); assert.ok(integration.AppModule);` : ""}
 `;
             await writeFile(join(root, "generated-smoke.mjs"), script);
             await promisify(execFile)(process.execPath, ["generated-smoke.mjs"], { cwd: root });
@@ -400,6 +402,8 @@ ${framework === "nestjs" ? `const integration = await import(pathToFileURL(${JSO
           "reporting",
           "--driver",
           "disk",
+          "--storage-directory",
+          "./data/reporting",
           "--orm",
           "--no-migrations",
           "--no-install",
@@ -419,6 +423,19 @@ ${framework === "nestjs" ? `const integration = await import(pathToFileURL(${JSO
     await db.close({ closeStorage: true });
     expect((await invoke(root, ["migrate:status"])).errors).toContain("disabled");
     expect((await invoke(root, ["connection:list", "--json"])).output).toContain("reporting");
+    const duplicate = await invoke(root, [
+      "connection:add",
+      "duplicate",
+      "--driver",
+      "disk",
+      "--storage-directory",
+      "./data/reporting",
+      "--no-migrations",
+      "--no-install",
+      "--yes",
+    ]);
+    expect(duplicate.code).toBe(1);
+    expect(duplicate.errors).toContain("distinct storage directories");
   });
 });
 
@@ -494,10 +511,13 @@ describe("installation and dependency failure boundaries", () => {
     expect(result.code).toBe(1);
     expect(await readdir(root)).toEqual([".duraxis-init.lock"]);
     await rm(join(root, ".duraxis-init.lock"));
-    await invoke(root, ["init", "--driver", "memory", "--no-install", "--yes"]);
-    const config = (await readdir(root)).find((file) => file.startsWith("duraxis.config."))!;
+    await invoke(root, ["init", "--driver", "memory", "--no-migrations", "--no-install", "--yes"]);
+    const config = "src/duraxis.config.ts";
     const before = await readFile(join(root, config), "utf8");
-    await writeFile(join(root, config), before + "\n// user edit\n");
+    await writeFile(
+      join(root, config),
+      before.replace("defineDuraxisConfig({", "defineDuraxisConfig({ ...applicationSettings,"),
+    );
     const add = await invoke(root, [
       "connection:add",
       "other",
@@ -508,8 +528,10 @@ describe("installation and dependency failure boundaries", () => {
       "--yes",
     ]);
     expect(add.code).toBe(1);
-    expect(add.errors).toContain("edited");
-    expect(await readFile(join(root, config), "utf8")).toBe(before + "\n// user edit\n");
+    expect(add.errors).toContain("Dynamic configuration spreads");
+    expect(await readFile(join(root, config), "utf8")).toBe(
+      before.replace("defineDuraxisConfig({", "defineDuraxisConfig({ ...applicationSettings,"),
+    );
   });
 });
 
@@ -616,7 +638,7 @@ describe("administrative trust and update boundaries", () => {
     const marker = join(root, "evaluated");
     await writeFile(
       join(root, "duraxis.config.mjs"),
-      `import {writeFile} from "node:fs/promises"; await writeFile(${JSON.stringify(marker)},"evaluated"); const extension={accessKeyId:"SECRET-VALUE",password:"SECRET-VALUE",url:"https://user:SECRET-VALUE@example.test"}; extension.circular=extension; export default {extension,createDatabase(){throw new Error("Factory must not run during inspection");}};`,
+      `import {writeFile} from "node:fs/promises"; await writeFile(${JSON.stringify(marker)},"evaluated"); const extension={accessKeyId:"SECRET-VALUE",password:"SECRET-VALUE",url:"https://user:SECRET-VALUE@example.test"}; extension.circular=extension; export default {extension,driver(){throw new Error("Factory must not run during inspection");}};`,
     );
     const staticResult = await invoke(root, ["config:show", "--json"]);
     expect(staticResult.code, staticResult.errors).toBe(0);
@@ -680,20 +702,23 @@ it("checks the selected connection's Disk environment path before a live open", 
   expect(await readdir(root)).not.toContain("not-initialized");
 });
 
-it("does not echo secret-bearing fragments from malformed managed JSON", async () => {
+it("does not echo secret-bearing fragments from malformed configuration", async () => {
   const root = await temporary();
-  await writeFile(join(root, "duraxis.project.json"), '{"password":SECRET-VALUE}');
-  const result = await invoke(root, ["config:show", "--json"]);
+  await writeFile(
+    join(root, "duraxis.config.ts"),
+    'import { defineDuraxisConfig } from "@duraxis/core"; export default defineDuraxisConfig({ password: "SECRET-VALUE", invalid: );',
+  );
+  const result = await invoke(root, ["config:validate", "--json"]);
   expect(result.code).toBe(1);
-  expect(result.errors).toContain("Invalid JSON syntax");
+  expect(result.errors).toContain("Invalid configuration syntax");
   expect(result.errors).not.toContain("SECRET-VALUE");
 });
 
-it("does not edit default managed settings when an alternate executable config is selected", async () => {
+it("does not edit the default configuration when an alternate executable config is selected", async () => {
   const root = await temporary();
   await linkPackages(root);
   await invoke(root, ["init", "--driver", "memory", "--no-migrations", "--no-install", "--yes"]);
-  const before = await readFile(join(root, "duraxis.project.json"), "utf8");
+  const before = await readFile(join(root, "src/duraxis.config.ts"), "utf8");
   await writeFile(
     join(root, "other.config.mjs"),
     'throw new Error("Must not execute during static inspection");',
@@ -706,7 +731,7 @@ it("does not edit default managed settings when an alternate executable config i
     "other.config.mjs",
   ]);
   expect(changed.code).toBe(1);
-  expect(await readFile(join(root, "duraxis.project.json"), "utf8")).toBe(before);
+  expect(await readFile(join(root, "src/duraxis.config.ts"), "utf8")).toBe(before);
   const shown = await invoke(root, ["config:show", "--config", "other.config.mjs", "--json"]);
   expect(shown.code, shown.errors).toBe(0);
   expect(shown.output).toContain("unresolved");

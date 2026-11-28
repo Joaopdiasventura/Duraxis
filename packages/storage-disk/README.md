@@ -53,7 +53,7 @@ process identity.
 
 ## Recovery modes
 
-The default remains conservative and backward-compatible:
+The default remains conservative:
 
 ```ts
 await AsyncDiskStorageDriver.open({
@@ -173,3 +173,7 @@ failure model and storage stack of each deployment.
 ## Production resource and lifecycle limits
 
 See the [production hardening guide](../../docs/PRODUCTION-HARDENING.md) for bounded defaults, cancellation, verified maintenance, tenant trust boundaries, encrypted cursors, upgrade instructions and remaining pilot limitations. Core rejects storage adapters without bounded-read capability; destructive shared-storage garbage collection is unsupported.
+
+## Shared application configuration
+
+Storage drivers remain independently usable. The [shared configuration guide](../../docs/CLI-SETUP.md) shows minimal memory, asynchronous disk, S3 and custom-driver configurations for standalone and NestJS applications. Configuration factories preserve existing conditional-operation, bounded-read, ownership and resource-limit guarantees.

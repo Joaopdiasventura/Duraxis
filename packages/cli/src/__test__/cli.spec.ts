@@ -49,11 +49,10 @@ export class User {
   );
   await writeFile(
     join(root, "duraxis.config.ts"),
-    `import { defineDuraxisConfig } from "@duraxis/cli";
-import { DuraxisDatabase } from "@duraxis/core";
+    `import { defineDuraxisConfig } from "@duraxis/core";
 import { AsyncDiskStorageDriver } from "@duraxis/storage-disk";
 import { User } from "./entities.js";
-export default defineDuraxisConfig({ entities: [User], migrations: { directory: "./duraxis/migrations", snapshots: "./duraxis/snapshots" }, async createDatabase() { return new DuraxisDatabase({ storage: await AsyncDiskStorageDriver.open({ directory: ${JSON.stringify(join(root, "data"))} }) }); } });
+export default defineDuraxisConfig({ entities: [User], migrations: { directory: "./duraxis/migrations", snapshots: "./duraxis/snapshots", format: "ts" }, driver: () => AsyncDiskStorageDriver.open({ directory: ${JSON.stringify(join(root, "data"))} }) });
 `,
   );
   return root;
@@ -93,18 +92,24 @@ describe("CLI", () => {
   });
   it("adopts an existing disk catalog as a baseline without recreating populated collections", async () => {
     const root = await setup();
-    const path = join(root, "duraxis.config.ts");
-    let source = await readFile(path, "utf8");
-    source = 'import { exportSchema } from "@duraxis/orm";\n' + source;
-    source = source.replace(
-      "return new DuraxisDatabase({ storage: await AsyncDiskStorageDriver.open({ directory:",
-      "const database = new DuraxisDatabase({ storage: await AsyncDiskStorageDriver.open({ directory:",
+    await exec(
+      process.execPath,
+      [
+        "--input-type=module",
+        "--eval",
+        `
+      import { loadConfig } from "@duraxis/cli";
+      import { exportSchema } from "@duraxis/orm";
+      const { config } = await loadConfig(process.cwd());
+      const database = await config.createDatabase();
+      try {
+        await database.defineCollections(exportSchema(await config.entities()));
+        await database.transaction(tx => tx.putDocument("users", "one", { name: "Alice" }));
+      } finally { await database.close({ closeStorage: true }); }
+    `,
+      ],
+      { cwd: root },
     );
-    source = source.replace(
-      "}) }); } });",
-      '}) }); if (!(await database.getCollectionDefinitions()).length) { await database.defineCollections(exportSchema([User])); await database.transaction(tx => tx.putDocument("users", "one", { name: "Alice" })); } return database; } });',
-    );
-    await writeFile(path, source);
     expect((await cli(root, "migration:baseline", "adopt", "--yes")).stdout).toContain("Created");
     expect((await cli(root, "migrate:status")).stdout).toContain("1 applied");
     // Creation was not rerun, and generated rollback protects existing records.
@@ -120,7 +125,8 @@ describe("CLI", () => {
     );
     await writeFile(
       path,
-      source + "\nexport default { ...config, databases: { named: config } };\n",
+      source +
+        '\nexport default defineDuraxisConfig({ defaultConnection: "named", connections: { named: config } });\n',
     );
     await mkdir(join(root, "nested"));
     expect(

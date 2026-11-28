@@ -43,40 +43,26 @@ for (const format of ["esm", "cjs"]) {
   assert.match(cli(directory, "migration:generate", "initial"), /Created/);
   assert.match(cli(directory, "migrate:up"), /Applied 1/);
   assert.match(cli(directory, "migrate:check"), /valid/);
-  if (format === "esm") {
-    // Legacy CommonJS wrappers deliberately loading ESM factories/entities retain
-    // the original CLI contract unless moduleFormat:cjs is explicitly declared.
-    await writeFile(
-      join(directory, "legacy.config.cjs"),
-      'module.exports = { entities: async () => (await import("./src/duraxis/entities.mjs")).entities, migrations: { directory: "./duraxis/migrations", snapshots: "./duraxis/snapshots", format: "js" }, createDatabase: async () => (await import("./src/duraxis/database.mjs")).createDatabase() };',
-    );
-    assert.match(cli(directory, "migrate:check", "--config", "legacy.config.cjs"), /valid/);
-  }
-
-  // This factory is runtime application code; it imports no CLI module.
-  const factory = await import(
-    pathToFileURL(join(directory, `src/duraxis/database.${format === "esm" ? "mjs" : "cjs"}`)).href
-  );
-  const orm = await factory.createORM();
+  // Runtime packages consume the same configuration without a CLI dependency.
+  const require = createRequire(join(directory, "package.json"));
+  const factory = format === "esm" ? await import("@duraxis/core") : require("@duraxis/core");
+  const ormAPI = format === "esm" ? await import("@duraxis/orm") : require("@duraxis/orm");
+  const appConfig = (await import(pathToFileURL(join(directory, "src/duraxis.config.js")).href))
+    .default;
+  const orm = await ormAPI.createORM(appConfig);
   const entities = await config.config.entities();
   await orm.getRepository(entities[0]).insert({ id: "one", name: "packed-consumer" });
   assert.equal((await orm.getRepository(entities[0]).find()).length, 1);
   await orm.close();
-  const integration = await import(
-    pathToFileURL(join(directory, `src/duraxis/duraxis.module.${format === "esm" ? "mjs" : "cjs"}`))
-      .href
-  );
-  const require = createRequire(join(directory, "package.json"));
+  const integration = await import(pathToFileURL(join(directory, "src/app.module.js")).href);
   const { NestFactory } = format === "esm" ? await import("@nestjs/core") : require("@nestjs/core");
-  const app = await NestFactory.createApplicationContext(integration.ApplicationDuraxisModule, {
-    logger: false,
-  });
+  const app = await NestFactory.createApplicationContext(integration.AppModule, { logger: false });
   await app.close();
   const installedCLI = join(root, "node_modules/@duraxis/cli");
   const developmentOnlyCLI = join(root, "node_modules/@duraxis/cli-development-only");
   await writeFile(
     join(directory, "production-smoke.mjs"),
-    `import {createORM} from "./src/duraxis/database.${format === "esm" ? "mjs" : "cjs"}"; const {entities} = await import("./src/duraxis/entities.${format === "esm" ? "mjs" : "cjs"}"); const orm = await createORM(); try { if ((await orm.getRepository(entities[0]).find()).length !== 1) throw new Error("Persistent row missing without CLI"); } finally { await orm.close(); }`,
+    `import config from "./src/duraxis.config.js"; import {createRequire} from "node:module"; const runtime = ${format === "esm" ? 'await import("@duraxis/orm")' : 'createRequire(import.meta.url)("@duraxis/orm")'}; const entities = await runtime.discoverEntities(config); const orm = await runtime.createORM(config); try { if ((await orm.getRepository(entities[0]).find()).length !== 1) throw new Error("Persistent row missing without CLI"); } finally { await orm.close(); }`,
   );
   await rename(installedCLI, developmentOnlyCLI);
   try {
@@ -86,21 +72,16 @@ for (const format of ["esm", "cjs"]) {
   }
 
   assert.throws(() => cli(directory, "migrate:down", "--yes"), /populated collection/);
-  const reopened = await factory.createDatabase();
+  const reopened = await factory.createDatabase(appConfig);
   await reopened.transaction((tx) => tx.deleteDocument("examples", "one"));
   await reopened.close({ closeStorage: true });
   cli(directory, "migrate:down", "--yes");
   assert.ok(
-    !(
-      await readFile(
-        join(directory, `src/duraxis/database.${format === "esm" ? "mjs" : "cjs"}`),
-        "utf8",
-      )
-    ).includes("@duraxis/cli"),
+    !(await readFile(join(directory, "src/duraxis.config.js"), "utf8")).includes("@duraxis/cli"),
   );
 }
 console.log(
-  "Packed setup: ESM/CommonJS shared factories, ORM persistence, NestJS ownership/shutdown and migration lifecycle passed",
+  "Packed setup: ESM/CommonJS shared configuration, ORM persistence, NestJS ownership/shutdown and migration lifecycle passed",
 );
 // Core-only manual migrations have no entity source, but still validate checksums,
 // history and the persisted expected catalog.
@@ -115,6 +96,8 @@ console.log(
     ".",
     "--driver",
     "disk",
+    "--framework",
+    "standalone",
     "--no-orm",
     "--migrations",
     "--language",

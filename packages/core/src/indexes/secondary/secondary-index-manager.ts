@@ -102,14 +102,15 @@ export function secondaryIndexBounds(
 ): EncodedIndexBounds {
   const hasEquality = options.eq !== undefined;
 
-  const legacy = [options.gt, options.gte, options.lt, options.lte].filter(
+  const tupleBounds = [options.gt, options.gte, options.lt, options.lte].filter(
     (value): value is readonly IndexScalar[] => value !== undefined,
   );
 
-  if (hasEquality && (options.prefix || options.range || legacy.length))
+  if (hasEquality && (options.prefix || options.range || tupleBounds.length))
     throw new Error("Equality cannot be combined with index ranges");
 
-  if (options.range && legacy.length) throw new Error("Use either range or tuple range shorthands");
+  if (options.range && tupleBounds.length)
+    throw new Error("Use either range or tuple range shorthands");
 
   const orders = indexFields(index).map((part) => part.order);
 
@@ -132,19 +133,19 @@ export function secondaryIndexBounds(
   let prefix = options.prefix ?? [];
   let range = options.range;
 
-  if (legacy.length) {
+  if (tupleBounds.length) {
     if (options.prefix) throw new Error("Tuple range shorthands already contain their prefix");
 
-    const arity = legacy[0]!.length;
+    const arity = tupleBounds[0]!.length;
 
-    if (arity == 0 || legacy.some((value) => value.length != arity))
+    if (arity == 0 || tupleBounds.some((value) => value.length != arity))
       throw new Error("Index range arity mismatch");
 
-    prefix = legacy[0]!.slice(0, -1);
+    prefix = tupleBounds[0]!.slice(0, -1);
 
     const encodedPrefix = prefix.length ? encode(prefix) : new Uint8Array();
 
-    for (const value of legacy.slice(1)) {
+    for (const value of tupleBounds.slice(1)) {
       const other = value.slice(0, -1);
       const encoded = other.length ? encode(other) : new Uint8Array();
 

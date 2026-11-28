@@ -86,7 +86,7 @@ export function defineStorageConformanceSuite(options: ConformanceOptions): void
 
     describe("incremental listing and resource contracts", () => {
       it("streams listings with bounded pages and supports early termination", async () => {
-        if (!driver.iterate) return; // Optional capability for third-party legacy drivers.
+        if (!driver.iterate) return; // Optional capability for third-party drivers.
         for (let i = 0; i < 5; i++)
           await driver.put(`stream/${i}`, encode(String(i)), createOnly());
         const seen: string[] = [];

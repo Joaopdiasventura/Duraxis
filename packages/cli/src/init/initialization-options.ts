@@ -106,6 +106,10 @@ export async function initializationOptions(
     context.hasManifest ? context.moduleFormat : "esm",
     true,
   );
+  if (context.hasManifest && moduleFormat !== context.moduleFormat)
+    throw new Error(
+      "Selected module format differs from package.json; use the existing format or update the package type before initialization",
+    );
   const sourceDir = safeRelative(values["source-dir"] ?? context.sourceDir);
   const namespace = values.namespace ?? "default";
   if (

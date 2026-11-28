@@ -77,4 +77,6 @@ See the [production hardening guide](../../docs/PRODUCTION-HARDENING.md) for bou
 
 ## CLI project setup
 
-Run `npx --package @duraxis/cli@latest duraxis init` to configure shared application factories, optional ORM/migrations and a storage driver. See the [setup and administration guide](../../docs/CLI-SETUP.md) for non-interactive options, NestJS ownership, deployment and diagnostics.
+Run `npx --package @duraxis/cli@latest duraxis init` to generate one source-root configuration. NestJS AppModule integration is automatic; standalone applications call the public runtime factories. See the [shared configuration API and examples](../../docs/CLI-SETUP.md) and [setup guide](../../docs/CLI-SETUP.md).
+
+`createORM(config, connectionName?)` resolves/validates entities before acquiring storage and releases owned resources after initialization failure or `orm.close()`. `discoverEntities` and `isDuraxisEntity` expose conventional file discovery and decorator checks. Explicit `entities` arrays/factories override discovery. Empty/missing/failed discovery is an error by default; named connections require isolated directories/lists. See the shared guide for filesystem boundaries, compiled deployments and Nest feature consistency.
