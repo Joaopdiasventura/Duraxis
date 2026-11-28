@@ -1,5 +1,12 @@
 # @duraxis/nestjs changelog
 
+## 0.5.1
+
+### Patch Changes
+
+- 4afd2a8: implement compatibility with the nestjs 12 version
+- 4afd2a8: Align S3 integration test dependencies with the Nest 12 runtime used by the NestJS package, preventing duplicate framework injection tokens. Verify that Duraxis connection cleanup and hooks reject shutdown failures, while Nest 12 reports those hook errors through its logger and completes application shutdown. Document the framework shutdown behavior and shared-runtime requirement.
+
 ## 0.5.0
 
 ### Minor Changes
