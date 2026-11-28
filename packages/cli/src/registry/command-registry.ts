@@ -189,16 +189,22 @@ export const commands: readonly CommandDefinition[] = [
     "admin",
     { options: ["evaluate"], configuration: "static" },
   ),
-  command("config:set", "CONFIGURATION", "Set a supported managed connection value", "admin", {
+  command("config:set", "CONFIGURATION", "Safely edit literal connection settings", "admin", {
     positional: ["key", "value"],
     options: ["dry-run"],
     configuration: "static",
   }),
-  command("connection:add", "CONFIGURATION", "Add a managed named connection", "admin", {
-    positional: ["name"],
-    options: initOptions,
-    configuration: "static",
-  }),
+  command(
+    "connection:add",
+    "CONFIGURATION",
+    "Add a named connection to the central configuration",
+    "admin",
+    {
+      positional: ["name"],
+      options: initOptions,
+      configuration: "static",
+    },
+  ),
   command(
     "connection:list",
     "CONFIGURATION",
@@ -217,7 +223,7 @@ export const commands: readonly CommandDefinition[] = [
   command(
     "generate:entity",
     "GENERATORS",
-    "Generate an ORM entity and update a managed registry",
+    "Generate an ORM entity discovered by file convention",
     "admin",
     { positional: ["name"], options: ["dry-run"], configuration: "static" },
   ),

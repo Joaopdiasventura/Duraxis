@@ -2,28 +2,30 @@ import { access, readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { initializeTypeScriptLoader } from "./typescript-loader.js";
 import { pathToFileURL } from "node:url";
-import type { DuraxisDatabase } from "@duraxis/core";
+import {
+  createDatabase,
+  normalizeDuraxisConnection,
+  selectDuraxisConnection,
+  type DuraxisConfiguration,
+  type DuraxisDatabase,
+} from "@duraxis/core";
+import { discoverEntities } from "@duraxis/orm";
 import type { EntityClass } from "@duraxis/orm";
 
 export interface DuraxisConnectionConfig {
+  readonly settings?: unknown;
   readonly moduleFormat?: "esm" | "cjs";
   readonly entities?:
     readonly EntityClass[] | (() => readonly EntityClass[] | Promise<readonly EntityClass[]>);
   readonly migrations?: {
     readonly directory: string;
     readonly snapshots: string;
-    readonly format?: "ts" | "js";
+    readonly format?: "ts" | "js" | "mts" | "mjs";
   };
   readonly createDatabase: () => DuraxisDatabase | Promise<DuraxisDatabase>;
 }
 
-export interface DuraxisConfig extends DuraxisConnectionConfig {
-  readonly databases?: Readonly<Record<string, DuraxisConnectionConfig>>;
-}
-
-export function defineDuraxisConfig<const T extends DuraxisConfig>(config: T): T {
-  return config;
-}
+export type DuraxisConfig = DuraxisConfiguration;
 
 export async function importFile(path: string | URL): Promise<unknown> {
   const url = path instanceof URL ? path : pathToFileURL(path);
@@ -64,6 +66,14 @@ export async function loadConfig(
         }
       }
 
+      if (!path) {
+        const project = await (
+          await import("./init/project-detector.js")
+        ).detectProject(directory, true);
+        if (project.configFiles.length > 1)
+          throw new Error("Multiple Duraxis configurations found; select one with --config");
+        if (project.configFiles.length === 1) path = resolve(directory, project.configFiles[0]!);
+      }
       if (path || dirname(directory) == directory) break;
 
       directory = dirname(directory);
@@ -74,28 +84,43 @@ export async function loadConfig(
 
   const module = (await importFile(path)) as { default?: DuraxisConfig };
 
-  const base = module.default;
-
-  const config = database ? base?.databases?.[database] : base;
-
-  if (
-    !config ||
-    typeof config.createDatabase != "function" ||
-    (config.moduleFormat !== undefined &&
-      config.moduleFormat !== "esm" &&
-      config.moduleFormat !== "cjs") ||
-    (config.entities !== undefined &&
-      !Array.isArray(config.entities) &&
-      typeof config.entities != "function") ||
-    (config.migrations !== undefined &&
-      (typeof config.migrations.directory != "string" ||
-        typeof config.migrations.snapshots != "string" ||
-        (config.migrations.format !== undefined &&
-          !["ts", "js"].includes(config.migrations.format))))
-  )
-    throw new Error("Invalid Duraxis configuration or unknown named database");
-
-  return { config, root: dirname(path), path };
+  let base = module.default;
+  // TypeScript CommonJS default exports may be wrapped by Node's ESM namespace.
+  if (base && "default" in base) base = (base as unknown as { default: DuraxisConfig }).default;
+  if (!base || typeof base !== "object" || (!("driver" in base) && !("connections" in base)))
+    throw new Error("Invalid Duraxis configuration; configure a driver or named connections");
+  const selected = selectDuraxisConnection(base as unknown as DuraxisConfiguration, database);
+  const options = normalizeDuraxisConnection({
+    ...selected,
+    location: selected.location ?? path,
+  });
+  const context = options.context;
+  const moduleFormat = /\.[cm][jt]s$/.test(path)
+    ? /\.c[jt]s$/.test(path)
+      ? "cjs"
+      : "esm"
+    : (await (await import("./init/project-detector.js")).detectProject(context.root, true))
+        .moduleFormat;
+  let discover = discoverEntities;
+  if (moduleFormat === "cjs" && (options.entities !== undefined || options.autoLoadEntities)) {
+    const require = (await import("node:module")).createRequire(path);
+    discover = (require("@duraxis/orm") as typeof import("@duraxis/orm")).discoverEntities;
+  }
+  const config: DuraxisConnectionConfig = {
+    settings: {
+      ...selected,
+      database: options.database,
+      schema: options.schema,
+      migrations: options.migrations,
+    },
+    createDatabase: () => createDatabase(options),
+    ...(options.entities !== undefined || options.autoLoadEntities
+      ? { entities: () => discover(options, (url) => importFile(url)) }
+      : {}),
+    ...(options.migrations ? { migrations: options.migrations } : {}),
+    moduleFormat,
+  };
+  return { config, root: context.root, path };
 }
 
 export async function readJSON<T>(path: string): Promise<T> {

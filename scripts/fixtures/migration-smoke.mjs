@@ -11,7 +11,7 @@ const bin = resolve("node_modules/@duraxis/cli/dist/bin.js");
 const cli = (...args) => execFileSync(process.execPath, [bin, ...args], { encoding: "utf8" });
 await verifyTypeScriptLoader(import.meta.resolve("@duraxis/cli"), process.cwd());
 assert.match(cli("--help"), /migration:generate/);
-cli("init", "--orm", "--migrations", "--no-install", "--yes");
+cli("init", "--framework", "standalone", "--orm", "--migrations", "--no-install", "--yes");
 const entity = `import { Entity, Column, PrimaryKey } from "@duraxis/orm";
 @Entity("users")
 export class User {
@@ -23,11 +23,10 @@ export class User {
 await writeFile("entities.ts", entity.replace("STATUS", ""));
 await writeFile(
   "duraxis.config.ts",
-  `import { defineDuraxisConfig } from "@duraxis/cli";
-import { DuraxisDatabase } from "@duraxis/core";
+  `import { defineDuraxisConfig } from "@duraxis/core";
 import { AsyncDiskStorageDriver } from "@duraxis/storage-disk";
 import { User } from "./entities.js";
-export default defineDuraxisConfig({ entities: [User], migrations: { directory: "./duraxis/migrations", snapshots: "./duraxis/snapshots" }, async createDatabase() { return new DuraxisDatabase({ storage: await AsyncDiskStorageDriver.open({ directory: ${JSON.stringify(resolve("migration-data"))} }) }); } });
+export default defineDuraxisConfig({ entities: [User], migrations: { directory: "./duraxis/migrations", snapshots: "./duraxis/snapshots", format: "ts" }, driver: () => AsyncDiskStorageDriver.open({ directory: ${JSON.stringify(resolve("migration-data"))} }) });
 `,
 );
 cli("migration:generate", "initial-schema");

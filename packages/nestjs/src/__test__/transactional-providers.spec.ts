@@ -526,47 +526,4 @@ describe("ordinary Nest transactional providers", () => {
       }
     },
   );
-
-  it("retains deprecated registration helpers and their named default connection", async () => {
-    let initializations = 0;
-    @Injectable()
-    class LegacyService {
-      public constructor(
-        @InjectDuraxisTransactionManager("legacy")
-        private readonly transactions: TransactionManager,
-      ) {}
-
-      @Transactional()
-      public async status(): Promise<string | undefined> {
-        return this.transactions.currentStatus()?.connectionName;
-      }
-
-      public async onModuleInit(): Promise<void> {
-        initializations++;
-        expect(await this.status()).toBe("legacy");
-      }
-    }
-    const module = await Test.createTestingModule({
-      imports: [
-        DuraxisModule.forRoot({ name: "legacy", driver: new MemoryStorageDriver(), entities: [] }),
-        DuraxisModule.forTransactionalProviders([LegacyService], "legacy"),
-        DuraxisModule.forTransactionalFeature([User], [UserService]),
-        root(),
-      ],
-    }).compile();
-    try {
-      await module.init();
-      expect(initializations).toBe(1);
-      expect(await module.get(LegacyService).status()).toBe("legacy");
-      await module.get(UserService).create("legacy-feature");
-      expect(
-        await module
-          .get<Repository<User>>(getDuraxisRepositoryToken(User))
-          .findById("legacy-feature"),
-      ).not.toBeNull();
-      expect(module.get(getDuraxisTransactionManagerToken("legacy"))).toBeDefined();
-    } finally {
-      await module.close();
-    }
-  });
 });

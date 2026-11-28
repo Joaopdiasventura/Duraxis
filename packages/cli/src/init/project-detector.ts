@@ -108,14 +108,45 @@ export async function detectProject(cwd: string, exact = false): Promise<Project
   if (declared === "npm" || declared === "pnpm" || declared === "yarn" || declared === "bun")
     detected.add(declared);
   const manager = detected.size === 1 ? [...detected][0] : undefined;
-  const sourceDir =
+  let sourceDir =
     (await exists(join(root, "source"))) && !(await exists(join(root, "src"))) ? "source" : "src";
+  const sourceRoots = new Set([sourceDir]);
+  if (await exists(join(root, "nest-cli.json"))) {
+    const nest = await readObject(join(root, "nest-cli.json"));
+    if (typeof nest.sourceRoot === "string") sourceDir = nest.sourceRoot;
+    if (record(nest.projects))
+      for (const project of Object.values(nest.projects)) {
+        if (record(project) && typeof project.sourceRoot === "string" && project.type !== "library")
+          sourceRoots.add(project.sourceRoot);
+      }
+    sourceRoots.add(sourceDir);
+  } else if (await exists(join(root, "tsconfig.json"))) {
+    const ts = (await import("typescript")).default;
+    const raw = ts.readConfigFile(join(root, "tsconfig.json"), ts.sys.readFile);
+    if (!raw.error) {
+      const parsed = ts.parseJsonConfigFileContent(raw.config, ts.sys, root);
+      if (parsed.options.rootDir) {
+        const { relative } = await import("node:path");
+        const candidate = relative(root, parsed.options.rootDir).replaceAll("\\", "/");
+        if (candidate && !candidate.startsWith("..")) {
+          sourceDir = candidate;
+          sourceRoots.add(candidate);
+        }
+      }
+    }
+  }
+  const { safeRelative } = await import("../filesystem/file-plan.js");
+  for (const source of sourceRoots) safeRelative(source);
   const nestModules: string[] = [];
   const entryPoints: string[] = [];
-  const queue = [{ path: sourceDir, depth: 0 }];
+  const sourceConfigs: string[] = [];
+  const visited = new Set<string>();
+  const queue = [...sourceRoots].map((path) => ({ path, depth: 0 }));
   let inspected = 0;
   for (let index = 0; index < queue.length && inspected < 2000; index++) {
     const item = queue[index]!;
+    if (visited.has(item.path)) continue;
+    visited.add(item.path);
     if (!(await exists(join(root, item.path)))) continue;
     const directory = await opendir(join(root, item.path));
     for await (const entry of directory) {
@@ -127,6 +158,8 @@ export async function detectProject(cwd: string, exact = false): Promise<Project
         !["node_modules", "dist", ".git"].includes(entry.name)
       )
         queue.push({ path, depth: item.depth + 1 });
+      if (entry.isFile() && /^duraxis\.config\.[cm]?[jt]s$/.test(entry.name))
+        sourceConfigs.push(path);
       if (entry.isFile() && /\.module\.[cm]?[jt]s$/.test(entry.name)) nestModules.push(path);
       if (entry.isFile() && /^(?:main|index|server|app)\.[cm]?[jt]s$/.test(entry.name))
         entryPoints.push(path);
@@ -151,12 +184,16 @@ export async function detectProject(cwd: string, exact = false): Promise<Project
     language:
       (await exists(join(root, "tsconfig.json"))) ||
       dependencies.typescript ||
-      devDependencies.typescript
+      devDependencies.typescript ||
+      [...nestModules, ...entryPoints].some((path) => /\.[cm]?ts$/.test(path))
         ? "typescript"
         : "javascript",
     moduleFormat: manifest.type === "module" ? "esm" : "cjs",
     nestjs: !!(dependencies["@nestjs/core"] || devDependencies["@nestjs/core"]),
-    configFiles: files.filter((f) => /^duraxis.config\.(?:[cm]?[jt]s)$/.test(f)),
+    configFiles: [
+      ...files.filter((f) => /^duraxis.config\.(?:[cm]?[jt]s)$/.test(f)),
+      ...sourceConfigs,
+    ],
     environmentFiles: files.filter((f) => /^\.env(?:\.|$)/.test(f)),
     sourceDir,
     nestModules,

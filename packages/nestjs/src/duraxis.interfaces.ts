@@ -1,5 +1,5 @@
 import type { InjectionToken, ModuleMetadata } from "@nestjs/common";
-import type { DuraxisDatabaseOptions } from "@duraxis/core";
+import type { DuraxisDatabaseOptions, DuraxisConnectionOptions } from "@duraxis/core";
 import type { DuraxisOrmOptions, EntityClass } from "@duraxis/orm";
 import type { StorageDriver } from "@duraxis/storage";
 
@@ -29,5 +29,8 @@ export interface DuraxisModuleAsyncOptions<
   readonly inject?: InjectTokens<TArguments>;
   readonly useFactory: (
     ...arguments_: TArguments
-  ) => DuraxisModuleOptions | Promise<DuraxisModuleOptions>;
+  ) =>
+    | DuraxisModuleOptions
+    | DuraxisConnectionOptions
+    | Promise<DuraxisModuleOptions | DuraxisConnectionOptions>;
 }

@@ -130,14 +130,9 @@ estáticos e substituição de métodos após a injeção não são suportados. 
 aguarda transações em andamento e rejeita novas transações; depois de remover a conexão, chamadas
 decoradas falham com `TransactionManagerNotFoundError`.
 
-### Migração
-
-`forTransactionalFeature(entities, providers, connectionName)` e
-`forTransactionalProviders(providers, connectionName)` estão depreciados e continuam disponíveis
-para migração. Troque-os por `forFeature(entities, connectionName)` e mova os serviços para
-`providers` do módulo consumidor. Para conexões nomeadas, explicite `connectionName` no decorator.
-A remoção dos métodos antigos fica para uma versão incompatível futura. Chamadas por `this` agora
-aplicam as opções transacionais do método interno, inclusive propagação e regras de rollback.
+Declare serviços em `providers` do módulo consumidor e registre entidades com `forFeature`.
+Para conexões nomeadas, explicite `connectionName` no decorator transacional. Chamadas por
+`this` aplicam as opções do método interno, inclusive propagação e regras de rollback.
 
 Veja a [decisão de arquitetura](../../docs/NESTJS_TRANSACTIONS.md) para a análise do ciclo de vida.
 
@@ -164,4 +159,6 @@ See the [production hardening guide](../../docs/PRODUCTION-HARDENING.md) for bou
 
 ## CLI project setup
 
-Run `npx --package @duraxis/cli@latest duraxis init` to configure shared application factories, optional ORM/migrations and a storage driver. See the [setup and administration guide](../../docs/CLI-SETUP.md) for non-interactive options, NestJS ownership, deployment and diagnostics.
+Run `npx --package @duraxis/cli@latest duraxis init` to generate one source-root configuration. NestJS AppModule integration is automatic; standalone applications call the public runtime factories. See the [shared configuration API and examples](../../docs/CLI-SETUP.md) and [setup guide](../../docs/CLI-SETUP.md).
+
+`DuraxisModule.forRoot(config)` also accepts Core shared configuration, including a named connections map. Located filesystem discovery is compared with existing feature registrations and mismatches fail explicitly. Existing feature-only `autoLoadEntities`, `forRootAsync`, injection tokens, transaction APIs and resource ownership remain compatible. Use explicit connection names for named repository/transaction injection.

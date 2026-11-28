@@ -363,7 +363,7 @@ export class S3StorageDriver implements StorageDriver {
 
     for await (const entry of this.iterate(prefix, { pageSize: 1000 })) {
       if (result.size >= 100_000)
-        throw new StorageError("Legacy listing limit exceeded; use iterate()", "RESOURCE_LIMIT");
+        throw new StorageError("Listing limit exceeded; use iterate()", "RESOURCE_LIMIT");
 
       result.set(entry.key, entry);
     }

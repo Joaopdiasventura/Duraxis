@@ -148,7 +148,7 @@ automatic plans refuse to invent values. Field removal rejects populated values.
 
 The engine accepts SHA-256 artifact digests from its loader. The CLI defines an
 identity using pinned TypeScript 5.9.3: two transpilation/printing passes targeting
-ES2022 ESM, with comments removed and legacy decorators enabled. It verifies the
+ES2022 ESM, with comments removed and TypeScript decorators enabled. It verifies the
 same digest for TypeScript and JavaScript emitted using those options. Ship ESM
 migration files, preserve ESM imports, and do not bundle/minify or downlevel them.
 Formatting, comments, and type-only edits are excluded from executable identity.
@@ -189,7 +189,7 @@ Named connections, async configuration, and auto-loaded entities remain under
 NestJS's existing ownership model. A runner can reuse an already-owned Core
 connection programmatically, but application startup does not run migrations.
 For incompatible changes, stop older replicas, migrate once, then start compatible
-replicas. Use staged backward-compatible application/schema releases when downtime
+replicas. Use staged coordinated application/schema releases when downtime
 is unsuitable.
 
 ## Production resource and lifecycle limits
@@ -198,4 +198,6 @@ See the [production hardening guide](../../docs/PRODUCTION-HARDENING.md) for bou
 
 ## CLI project setup
 
-Run `npx --package @duraxis/cli@latest duraxis init` to configure shared application factories, optional ORM/migrations and a storage driver. See the [setup and administration guide](../../docs/CLI-SETUP.md) for non-interactive options, NestJS ownership, deployment and diagnostics.
+Run `npx --package @duraxis/cli@latest duraxis init` to generate one source-root configuration. NestJS AppModule integration is automatic; standalone applications call the public runtime factories. See the [shared configuration API and examples](../../docs/CLI-SETUP.md) and [setup guide](../../docs/CLI-SETUP.md).
+
+Enable shared migrations with `migrations: true`, or customize `directory` and `snapshots`. Core normalizes these settings for CLI/runtime; migrations imply validation and never enable schema creation. CLI resolves entity files without starting Nest. New CLI artifacts use `.mts`/`.mjs`; old artifacts, snapshots, history and locking remain unchanged.

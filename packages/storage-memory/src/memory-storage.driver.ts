@@ -208,7 +208,7 @@ export class MemoryStorageDriver implements StorageDriver {
       if (!key.startsWith(prefix)) continue;
 
       if (results.length >= 100_000)
-        throw new StorageError("Legacy listing limit exceeded; use iterate()", "RESOURCE_LIMIT");
+        throw new StorageError("Listing limit exceeded; use iterate()", "RESOURCE_LIMIT");
 
       results.push({
         key,

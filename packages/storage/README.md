@@ -36,3 +36,7 @@ Requer Node.js 24.15.0+. O pacote inclui ESM, CommonJS e declarações TypeScrip
 ## Production resource and lifecycle limits
 
 See the [production hardening guide](../../docs/PRODUCTION-HARDENING.md) for bounded defaults, cancellation, verified maintenance, tenant trust boundaries, encrypted cursors, upgrade instructions and remaining pilot limitations. Core rejects storage adapters without bounded-read capability; destructive shared-storage garbage collection is unsupported.
+
+## Shared application configuration
+
+Storage drivers remain independently usable. The [shared configuration guide](../../docs/CLI-SETUP.md) shows minimal memory, asynchronous disk, S3 and custom-driver configurations for standalone and NestJS applications. Configuration factories preserve existing conditional-operation, bounded-read, ownership and resource-limit guarantees.

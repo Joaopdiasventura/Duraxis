@@ -711,3 +711,94 @@ describe("AsyncDiskStorageDriver integration", () => {
     }
   });
 });
+
+it("accepts a centralized shared config with isolated named namespaces and existing injection tokens", async () => {
+  const module = await Test.createTestingModule({
+    imports: [
+      DuraxisModule.forRoot({
+        defaultConnection: "primary",
+        connections: {
+          primary: {
+            driver: () => new TrackingMemoryStorage(),
+            entities: [User],
+            schema: { mode: "create" },
+          },
+          analytics: {
+            driver: () => new TrackingMemoryStorage(),
+            entities: [Product],
+            schema: { mode: "create" },
+          },
+        },
+      }),
+      DuraxisModule.forFeature([User], "primary"),
+      DuraxisModule.forFeature([Product], "analytics"),
+    ],
+  }).compile();
+  await module.init();
+  try {
+    expect(module.get<DuraxisDatabase>(getDuraxisDatabaseToken("primary")).namespace).toBe(
+      "primary",
+    );
+    expect(module.get<DuraxisDatabase>(getDuraxisDatabaseToken("analytics")).namespace).toBe(
+      "analytics",
+    );
+    const primary = module.get<DuraxisORM>(getDuraxisOrmToken("primary"));
+    const analytics = module.get<DuraxisORM>(getDuraxisOrmToken("analytics"));
+    expect(primary.metadata.has(User)).toBe(true);
+    expect(primary.metadata.has(Product)).toBe(false);
+    expect(analytics.metadata.has(User)).toBe(false);
+    expect(analytics.metadata.has(Product)).toBe(true);
+  } finally {
+    await module.close();
+  }
+});
+
+it("normalizes shared asynchronous configuration while retaining Nest dependency injection", async () => {
+  @Module({
+    providers: [{ provide: "shared-namespace", useValue: "async-shared" }],
+    exports: ["shared-namespace"],
+  })
+  class ConfigModule {}
+  const storage = new TrackingMemoryStorage();
+  const module = await Test.createTestingModule({
+    imports: [
+      DuraxisModule.forRootAsync({
+        imports: [ConfigModule],
+        inject: ["shared-namespace"] as const,
+        useFactory: async (namespace: string) => ({
+          baseDirectory: process.cwd(),
+          driver: () => storage,
+          entities: [User],
+          schema: { mode: "create" as const },
+          database: { namespace },
+        }),
+      }),
+    ],
+  }).compile();
+  await module.init();
+  expect(module.get<DuraxisDatabase>(getDuraxisDatabaseToken()).namespace).toBe("async-shared");
+  await module.close();
+  expect(storage.closeCalls).toBe(1);
+});
+
+it("reports filesystem/feature schema disagreement before acquiring storage", async () => {
+  let opened = false;
+  await expect(
+    Test.createTestingModule({
+      imports: [
+        DuraxisModule.forRoot({
+          baseDirectory: process.cwd(),
+          driver: () => {
+            opened = true;
+            return new TrackingMemoryStorage();
+          },
+          entities: [User],
+          autoLoadEntities: true,
+          schema: { mode: "create" },
+        }),
+        DuraxisModule.forFeature([Product]),
+      ],
+    }).compile(),
+  ).rejects.toThrow("differs from forFeature");
+  expect(opened).toBe(false);
+});

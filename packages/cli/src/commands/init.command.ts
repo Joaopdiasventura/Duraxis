@@ -10,7 +10,6 @@ import { RegistryClient } from "../dependencies/registry-client.js";
 import { resolveDependencies } from "../dependencies/dependency-resolver.js";
 import { installCommands, runProcess } from "../dependencies/package-manager.js";
 import { withPrompts, type Prompt } from "../terminal/prompts.js";
-import { readManaged } from "../init/managed-project.js";
 export async function initialize(parsed: ParsedCommand, io: CLIIO): Promise<unknown> {
   const values = { ...parsed.values };
   const project = await detectProject(
@@ -29,15 +28,13 @@ export async function initialize(parsed: ParsedCommand, io: CLIIO): Promise<unkn
     throw new Error(
       "Another initialization/update owns .duraxis-init.lock. Wait for it to finish; inspect stale guards before manual removal.",
     );
-  if (await exists(resolve(project.root, "duraxis.project.json"))) {
-    const settings = await readManaged(project.root);
+  if (project.configFiles.length)
     return {
       status: "already-initialized",
       root: project.root,
-      connections: Object.keys(settings.connections),
-      actions: ["config:show", "config:set", "connection:add", "doctor"],
+      configuration: project.configFiles,
+      actions: ["config:show", "doctor"],
     };
-  }
   const interactive =
     io.interactive ?? (process.stdin.isTTY && process.stdout.isTTY && !values.json);
   if (values.framework === "auto") values.framework = project.nestjs ? "nestjs" : "standalone";
@@ -180,7 +177,7 @@ export async function initialize(parsed: ParsedCommand, io: CLIIO): Promise<unkn
             "duraxis migrate:up",
           ]
       : [
-          "Import createDatabase/createORM from generated shared factory",
+          "Import createDatabase from @duraxis/core or createORM from @duraxis/orm and pass your duraxis.config",
           "Always close resources in finally",
         ],
   };

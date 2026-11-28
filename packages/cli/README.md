@@ -21,39 +21,25 @@ pnpm exec duraxis migrate:up
 pnpm exec duraxis doctor
 ```
 
-Use `--no-install` for offline scaffolding, `--dry-run` to inspect a plan, and `--yes` for redirected input. Migrations are optional; Memory defaults to no migrations. NestJS requires ORM. Generated application factories share settings/entities with administration and do not import the CLI at runtime. Existing application files and executable configuration are preserved.
+Use `--no-install` for offline scaffolding, `--dry-run` to inspect a plan, and `--yes` for redirected input. Migrations are optional; Memory defaults to no migrations. NestJS requires ORM. One source-root configuration serves runtime and administration without importing the CLI. Existing NestJS AppModules receive direct registration; unrelated application code and persistence integrations are preserved.
 
 The [setup and administration guide](../../docs/CLI-SETUP.md) documents all options, package managers, storage configurations, named connections, environment provisioning, generated code, production deployment, safeguards and limitations.
 
-`duraxis help` lists every command; `duraxis help init` lists every initialization option. New administration commands include `doctor`, `config:show`, `config:validate`, `config:set`, `connection:add`, `connection:list`, `storage:list`, `storage:check`, `generate:entity`, `generate:module`, and `upgrade --check/--apply`. An unscoped `npx duraxis` does not identify this package.
+`duraxis help` lists every command; `duraxis help init` lists every initialization option. New administration commands include `doctor`, `config:show`, `config:validate`, `config:set`, `connection:add`, `connection:list`, `storage:list`, `storage:check`, `generate:entity`, `generate:module`, `upgrade --check/--apply`. An unscoped `npx duraxis` does not identify this package.
 
 ## Configuration and loading
 
-Discovery walks from the working directory upward for `duraxis.config.ts`,
-`duraxis.config.mts`, `duraxis.config.js`, `duraxis.config.mjs`,
-`duraxis.config.cts`, or `duraxis.config.cjs`. `--config <path>` overrides discovery.
-Migration and snapshot directories resolve relative to the config file. Paths
-inside your database factory are your responsibility; use `import.meta.url` as
-above instead of depending on the command's working directory.
+The preferred configuration uses `defineDuraxisConfig` from `@duraxis/core`, a driver factory, `location: import.meta.url` (or `__filename`), optional `autoLoadEntities` and `migrations: true`. See the [shared configuration API](../../docs/CLI-SETUP.md) for complete examples, exact discovery boundaries and source/compiled behavior.
 
-`entities` accepts a class array or an async factory returning classes, allowing
-project-specific entity discovery. `migrations.format` is `ts` (default) or `js`.
-A `databases` object can hold named connection configs with a required `createDatabase` factory and optional `entities`/`migrations`. Select one with `--database <name>`;
-the top-level connection is the default.
-
-The factory returns an owned Core database, not a NestJS connection. The CLI closes
-that database and storage in a `finally` block. Factories must clean up resources
-if they fail before returning. Do not pass an application-owned connection to
-this CLI API; use the programmatic runner for that scenario.
+The CLI searches conventional root config names and actual source roots detected from Nest/TypeScript project configuration. `--config <path>` resolves ambiguity. Runtime and CLI use the same normalized package-relative storage/migration paths and validated entity schema. Standalone `createDatabase(config)` and `createORM(config)` own factory-created resources without depending on CLI or NestJS.
 
 Duraxis registers synchronous Node.js `registerHooks()` before loading a config,
 entity, or migration, including programmatic `loadConfig()` calls. No manual
 loader registration, experimental Node flags, or extra runtime transpiler is
-required. Native type stripping alone cannot implement legacy decorators.
+required. Native type stripping alone cannot implement TypeScript decorators.
 
 Supported configuration formats are `.ts`, `.mts`, `.js`, `.mjs`, `.cts`, and
-`.cjs`. Discovery checks those extensions in that order. `.ts` and `.mts` source
-modules execute as ESM; `.cts` uses CommonJS. JavaScript keeps Node's ordinary
+`.cjs`. Discovery checks those extensions in that order. `.ts` follows package.json module semantics; `.mts` executes as ESM and `.cts` as CommonJS. JavaScript keeps Node's ordinary
 package/module semantics. Executable migration artifacts support ESM `.ts`,
 `.mts`, `.js`, and `.mjs`; CommonJS migration artifacts are unsupported because
 their executable form does not share the ESM checksum identity contract.
@@ -73,7 +59,7 @@ usual `reflect-metadata` dependency before decorated modules. Entity columns
 should declare their Core `type` explicitly. `tsconfig.json` path aliases,
 custom compiler plugins, `.tsx`/`.jsx`, and TypeScript package sources inside
 `node_modules` are not supported. Use relative imports or published package exports.
-Generated CommonJS configurations use `.cjs`/`.cts`, declare `moduleFormat: "cjs"`, and select matching CommonJS ORM/migration runners. Legacy wrappers without this declaration retain their ESM entity/factory contract. Generated migrations remain ESM in a type:module migration directory to preserve checksum identity. Avoid mixing independent ESM/CommonJS decorator registries within one entity graph.
+New CommonJS configurations use ordinary `.ts`/`.js` with package module semantics, and the CLI selects the matching ORM decorator registry. New migration files use ESM `.mts`/`.mjs` without per-directory module manifests. Avoid mixing independent ESM/CommonJS decorator registries within one entity graph.
 Config files and migrations are trusted executable code; keep module initialization
 free of database writes and external side effects.
 
@@ -108,7 +94,7 @@ and JSON errors on stderr. Initialization prompts on a terminal unless `--yes` i
 
 | Command                              | Behavior and options                                                                                                                                                                                        |
 | ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `init`                               | Creates a managed project and shared application factories; installs compatible dependencies by default. Migrations and ORM are optional. Use --dry-run and --no-install as needed.                         |
+| `init`                               | Creates the source-root configuration and integrates NestJS; installs compatible dependencies by default. Migrations and ORM are optional. Use --dry-run and --no-install as needed.                        |
 | `migration:create <name>`            | Creates a throwing manual template. Complete it and provide an expected snapshot before use.                                                                                                                |
 | `migration:snapshot --schema <file>` | Saves an intended snapshot for the latest manual migration from a JSON array of Core collection definitions. Never overwrites a snapshot. Application verifies the result atomically.                       |
 | `migration:generate <name>`          | Compares the latest local snapshot with exported entities and generates a self-contained migration/snapshot pair. No file on no-change. `--allow-destructive` authorizes generating removals.               |
@@ -180,7 +166,7 @@ checksum mismatches, and divergent chains are rejected. Production should contai
 one executable format per migration, not both `.ts` and `.js` copies.
 
 Artifact checksums normalize executable code with pinned TypeScript 5.9.3 (two
-passes, ES2022 ESM, comments removed, legacy decorators, metadata enabled,
+passes, ES2022 ESM, comments removed, TypeScript decorators, metadata enabled,
 `useDefineForClassFields: false`). Compiled migrations must preserve this target
 and ESM module form. Comments/types/formatting do not change identity; executable
 edits do. External helper content is not transitively hashed: keep historical

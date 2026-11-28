@@ -59,3 +59,6 @@ export * from "./errors/index.js";
 export { TransactionConflictError, CommitOutcomeUnknownError } from "@duraxis/core";
 
 export { exportSchema } from "./schema/schema-exporter.js";
+
+export { discoverEntities, isDuraxisEntity } from "./discovery.js";
+export { createORM } from "./database/create-orm.js";

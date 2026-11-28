@@ -80,4 +80,6 @@ See the [production hardening guide](../../docs/PRODUCTION-HARDENING.md) for bou
 
 ## CLI project setup
 
-Run `npx --package @duraxis/cli@latest duraxis init` to configure shared application factories, optional ORM/migrations and a storage driver. See the [setup and administration guide](../../docs/CLI-SETUP.md) for non-interactive options, NestJS ownership, deployment and diagnostics.
+Run `npx --package @duraxis/cli@latest duraxis init` to generate one source-root configuration. NestJS AppModule integration is automatic; standalone applications call the public runtime factories. See the [shared configuration API and examples](../../docs/CLI-SETUP.md) and [setup guide](../../docs/CLI-SETUP.md).
+
+`defineDuraxisConfig`, `selectDuraxisConnection`, `normalizeDuraxisConnection`, `duraxisDriverContext` and `createDatabase` are framework-independent exports. Configuration accepts a driver/driver factory or a centralized named `connections` map. Core does not import ORM, NestJS or CLI. `createDatabase` owns factory-created drivers and closes them on initialization failure and default shutdown; supplied instances remain externally owned unless requested.

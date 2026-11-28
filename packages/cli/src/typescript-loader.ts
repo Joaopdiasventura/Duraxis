@@ -1,6 +1,6 @@
 import { readFileSync, statSync } from "node:fs";
 import { registerHooks, type ModuleHooks } from "node:module";
-import { extname } from "node:path";
+import { extname, dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import ts from "typescript";
 import { assertSupportedRuntime } from "./runtime.mjs";
@@ -81,14 +81,31 @@ export function initializeTypeScriptLoader(entry: URL): void {
       const path = fileURLToPath(file);
       if (!/\.(?:ts|mts|cts)$/.test(path) || /\.d\.(?:ts|mts|cts)$/.test(path))
         return nextLoad(url, context);
-      const commonjs = path.endsWith(".cts");
+      let commonjs = path.endsWith(".cts");
+      if (path.endsWith(".ts")) {
+        let directory = dirname(path);
+        while (true) {
+          try {
+            commonjs =
+              JSON.parse(readFileSync(join(directory, "package.json"), "utf8")).type !== "module";
+            break;
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+          }
+          if (dirname(directory) === directory) {
+            commonjs = true;
+            break;
+          }
+          directory = dirname(directory);
+        }
+      }
       const result = ts.transpileModule(readFileSync(file, "utf8"), {
         fileName: path,
         reportDiagnostics: true,
         compilerOptions: {
           target: ts.ScriptTarget.ES2022,
-          module: commonjs ? ts.ModuleKind.NodeNext : ts.ModuleKind.ESNext,
-          ...(commonjs ? { moduleResolution: ts.ModuleResolutionKind.NodeNext } : {}),
+          module: commonjs ? ts.ModuleKind.CommonJS : ts.ModuleKind.ESNext,
+
           experimentalDecorators: true,
           emitDecoratorMetadata: true,
           useDefineForClassFields: false,

@@ -10,7 +10,7 @@ export async function verifyTypeScriptLoader(cliURL, parent) {
   const require = createRequire(cliURL);
   await import(pathToFileURL(require.resolve("reflect-metadata")).href);
   const root = await mkdtemp(join(parent, "duraxis loader São Paulo "));
-  const base = `entities: [], migrations: { directory: "./migrations", snapshots: "./snapshots" }, createDatabase() { throw new Error("must not open"); }`;
+  const base = `entities: [], migrations: { directory: "./migrations", snapshots: "./snapshots" }, driver() { throw new Error("must not open"); }`;
   const file = async (name, source) => {
     const path = join(root, name);
     await writeFile(path, source);
@@ -30,13 +30,13 @@ import { value } from "./nested/value.js";
     );
     await file(
       "duraxis.config.ts",
-      `import { User } from "./entities.js"; export default { ${base}, entities: [User], databases: { named: { ${base}, entities: [User] } } };`,
+      `import { User } from "./entities.js"; export default { defaultConnection: "named", connections: { named: { ${base}, entities: [User] } } };`,
     );
     const loaded = await api.loadConfig(join(root, "nested"), undefined, "named");
-    const user = loaded.config.entities[0];
+    const user = (await loaded.config.entities())[0];
     assert.equal(user.value, "nested");
     assert.equal(Reflect.getMetadata("design:type", user.prototype, "name"), String);
-    assert.equal((await api.loadConfig(root)).config.entities[0], user);
+    assert.equal((await (await api.loadConfig(root)).config.entities())[0], user);
     // Direct .ts and file-URL imports; the loader handles query strings as well.
     await file("direct.ts", "export const direct: boolean = true;");
     const directURL = pathToFileURL(join(root, "direct.ts"));
@@ -71,11 +71,15 @@ import { value } from "./nested/value.js";
     );
     await config("config.cts");
     await file(
+      "common-entity.cts",
+      'import { Entity, PrimaryKey } from "@duraxis/orm"; @Entity("common_users") export class CommonUser { @PrimaryKey() id!: string; }',
+    );
+    await file(
       "dynamic.config.cts",
-      `export = { ${base}, entities: async () => [(await import("./entities.js")).User] };`,
+      `export = { ${base}, entities: async () => [(await import("./common-entity.cjs")).CommonUser] };`,
     );
     const commonDynamic = await config("dynamic.config.cts");
-    assert.equal((await commonDynamic.config.entities())[0], user);
+    assert.equal((await commonDynamic.config.entities())[0].name, "CommonUser");
     await file(
       "config.cjs",
       `const common = require("./common.cjs"); module.exports = { ${base}, entities: common === "commonjs" ? [] : null };`,
@@ -89,7 +93,7 @@ import { value } from "./nested/value.js";
       "cjs-api.config.ts",
       `import { User } from "./entities.js"; export default { ${base}, entities: [User] };`,
     );
-    assert.equal((await config("cjs-api.config.ts", cjs)).config.entities[0], user);
+    assert.equal((await (await config("cjs-api.config.ts", cjs)).config.entities())[0], user);
     cjs.disposeTypeScriptLoader();
     await file("missing.config.ts", `import "./missing.js"; export default { ${base} };`);
     await assert.rejects(
@@ -119,7 +123,7 @@ import { value } from "./nested/value.js";
       `import { modern } from "./modern.mjs"; export default { ${base} };`,
     );
     await config("reinitialized.config.ts");
-    assert.equal((await api.loadConfig(root)).config.entities[0], user);
+    assert.equal((await (await api.loadConfig(root)).config.entities())[0], user);
     assert.equal(await user.loadLater(), "cached dynamic import");
   } finally {
     api.disposeTypeScriptLoader();

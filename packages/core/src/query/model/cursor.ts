@@ -1,11 +1,4 @@
-import {
-  createHmac,
-  timingSafeEqual,
-  createHash,
-  randomBytes,
-  createCipheriv,
-  createDecipheriv,
-} from "node:crypto";
+import { createHmac, createHash, randomBytes, createCipheriv, createDecipheriv } from "node:crypto";
 import {
   fieldDefinition,
   type CollectionDefinition,
@@ -15,7 +8,7 @@ import type { LogicalQuery } from "./query.js";
 import type { QueryRow } from "../executor/predicate.js";
 
 interface CursorEnvelope {
-  readonly version: 2;
+  readonly version: 3;
   readonly generation: string;
   readonly queryHash: string;
   readonly values: readonly (string | number | boolean | null | { missing: true })[];
@@ -66,13 +59,13 @@ function queryHash(key: Uint8Array, query: LogicalQuery): string {
   return hmac(key, canonical(shape(query)));
 }
 
-function encodeLegacyCursor(
+function cursorEnvelope(
   generation: string,
   schema: CollectionDefinition,
   query: LogicalQuery,
   row: QueryRow,
   signingKey: Uint8Array,
-): string {
+): CursorEnvelope {
   if (query.collection != schema.name) throw new Error("Cursor collection mismatch");
 
   const orderBy = query.orderBy ?? [];
@@ -98,86 +91,20 @@ function encodeLegacyCursor(
   });
 
   const envelope: CursorEnvelope = {
-    version: 2,
+    version: 3,
     generation,
     queryHash: queryHash(signingKey, query),
     values,
     id: row.id,
   };
 
-  const payload = canonical(envelope);
-
-  return Buffer.from(
-    JSON.stringify({ payload: envelope, signature: hmac(signingKey, payload) }),
-  ).toString("base64url");
-}
-
-function decodeLegacyCursor(
-  cursor: string,
-  generation: string,
-  schema: CollectionDefinition,
-  query: LogicalQuery,
-  signingKey: Uint8Array,
-): { readonly values: readonly (IndexScalar | undefined)[]; readonly id: string } {
-  let parsed: unknown;
-
-  try {
-    parsed = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
-  } catch {
-    throw new Error("Invalid query cursor");
-  }
-
-  if (!parsed || typeof parsed != "object" || Array.isArray(parsed))
-    throw new Error("Invalid query cursor");
-
-  const record = parsed as Record<string, unknown>;
-  const envelope = record.payload as CursorEnvelope;
-
-  if (!envelope || envelope.version != 2 || typeof record.signature != "string")
-    throw new Error("Invalid query cursor payload");
-
-  const expectedSignature = hmac(signingKey, canonical(envelope));
-
-  const actual = Buffer.from(record.signature, "hex");
-  const expected = Buffer.from(expectedSignature, "hex");
-
-  if (actual.length != expected.length || !timingSafeEqual(actual, expected))
-    throw new Error("Invalid query cursor signature");
-
-  if (envelope.generation != generation)
-    throw new Error("Query cursor snapshot generation is unavailable");
-
-  if (envelope.queryHash != queryHash(signingKey, query) || query.collection != schema.name)
-    throw new Error("Query cursor is incompatible with this query");
-
-  const orderBy = query.orderBy ?? [];
-
-  if (
-    !Array.isArray(envelope.values) ||
-    envelope.values.length != orderBy.length ||
-    typeof envelope.id != "string"
-  )
-    throw new Error("Invalid query cursor payload");
-
-  return {
-    id: envelope.id,
-    values: envelope.values.map((item, index) => {
-      if (item && typeof item == "object" && "missing" in item) return undefined;
-
-      if (fieldDefinition(schema, orderBy[index]!.field)?.type == "date" && typeof item == "string")
-        return new Date(item);
-
-      return item as IndexScalar;
-    }),
-  };
+  return envelope;
 }
 
 export interface CursorKeyring {
   readonly activeKeyId: string;
   readonly keys: Readonly<Record<string, Uint8Array>>;
   readonly ttlMs?: number;
-  readonly allowLegacySigned?: boolean;
-  readonly legacySigningKey?: Uint8Array;
 }
 
 function cursorKeys(value: Uint8Array | CursorKeyring): CursorKeyring {
@@ -221,9 +148,7 @@ export function encodeQueryCursor(
   const ring = cursorKeys(keys);
   const key = ring.keys[ring.activeKeyId]!;
 
-  const legacy = JSON.parse(
-    Buffer.from(encodeLegacyCursor(generation, schema, query, row, key), "base64url").toString(),
-  ) as { payload: CursorEnvelope };
+  const envelope = cursorEnvelope(generation, schema, query, row, key);
 
   const nonce = randomBytes(12);
   const cipher = createCipheriv("aes-256-gcm", key, nonce);
@@ -231,7 +156,7 @@ export function encodeQueryCursor(
   cipher.setAAD(Buffer.from(canonical({ version: 3, keyId: ring.activeKeyId, namespace })));
 
   const payload = JSON.stringify({
-    ...legacy.payload,
+    ...envelope,
     version: 3,
     namespace,
     expiresAt: Date.now() + (ring.ttlMs ?? 15 * 60_000),
@@ -282,12 +207,7 @@ export function decodeQueryCursor(
   if (!outer || typeof outer != "object" || Array.isArray(outer))
     throw new Error("Invalid query cursor");
 
-  if (outer.version !== 3) {
-    if (!namespace && ring.allowLegacySigned && ring.legacySigningKey)
-      return decodeLegacyCursor(cursor, generation, schema, query, ring.legacySigningKey);
-
-    throw new Error("Legacy signed cursors are disabled; restart pagination");
-  }
+  if (outer.version !== 3) throw new Error("Unsupported cursor format; restart pagination");
 
   if (
     Object.keys(outer).sort().join(",") != "ciphertext,keyId,nonce,tag,version" ||

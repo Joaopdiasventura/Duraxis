@@ -422,7 +422,7 @@ describe("AsyncDiskStorageDriver persistence", () => {
     expect(await readFile(guard, "utf8")).toBe("incomplete recovery");
   });
 
-  it("keeps legacy format locks manual-only", async () => {
+  it("requires manual recovery for unsupported lock formats", async () => {
     const path = await directory();
     const payload = {
       format: 1 as const,
