@@ -1,6 +1,6 @@
 {
   "name": "@duraxis/orm",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Decorator-based entity mapping and repositories for the Duraxis database.",
   "license": "ISC",
   "author": "João Paulo Dias <joaopdias.dev@gmail.com>",
