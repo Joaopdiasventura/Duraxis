@@ -626,6 +626,9 @@ describe("administrative trust and update boundaries", () => {
     const check = await invoke(root, ["upgrade", "--check", "--json"], injected);
     expect(check.code, check.errors).toBe(0);
     expect(check.output).toContain("0.5.0");
+    expect(JSON.parse(check.output).packages).toMatchObject([
+      { package: "@duraxis/core", installed: "0.3.0", target: "0.5.0" },
+    ]);
     expect(commands).toEqual([]);
     const apply = await invoke(root, ["upgrade", "--apply", "--json"], injected);
     expect(apply.code, apply.errors).toBe(0);
