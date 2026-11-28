@@ -386,6 +386,11 @@ void DuraxisModule;
     await readFile(join(root, "scripts/fixtures/typescript-loader-smoke.mjs"), "utf8"),
   );
   run("node", ["migration-smoke.mjs"], { cwd: consumer });
+  await writeFile(
+    join(consumer, "setup-smoke.mjs"),
+    await readFile(join(root, "scripts/fixtures/setup-smoke.mjs"), "utf8"),
+  );
+  run("node", ["setup-smoke.mjs"], { cwd: consumer });
   console.log("✓ external ESM, CommonJS, TypeScript, and packed CLI migration lifecycle passed");
 }
 
